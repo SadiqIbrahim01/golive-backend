@@ -1,0 +1,31 @@
+# ============================================================
+# Local configuration template.
+# Copy this file: cp application-local.yml.example application-local.yml
+# Then fill in your own values.
+# ============================================================
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/golive_dev
+    username: YOUR_POSTGRES_USERNAME
+    password: YOUR_POSTGRES_PASSWORD
+    hikari:
+      maximum-pool-size: 5
+      connection-timeout: 20000
+      idle-timeout: 300000
+      pool-name: GoLiveHikariPool
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+
+livekit:
+  url: wss://your-project.livekit.cloud
+  api-key: YOUR_LIVEKIT_API_KEY
+  api-secret: YOUR_LIVEKIT_API_SECRET
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE

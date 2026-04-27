@@ -1,3 +1,41 @@
 spring:
   application:
     name: golive-backend
+
+  profiles:
+    active: local
+
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+
+    properties:
+      hibernate:
+        format_sql: true
+        default_batch_fetch_size: 20
+
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+
+    deserialization:
+      fail-on-unknown-properties: false
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+livekit:
+  url: ${LIVEKIT_URL}
+  api-key:  ${LIVEKIT_API_KEY}
+  api-secret: ${LIVEKIT_API_SECRET}
+
+logging:
+  level:
+    root: INFO
+    com.golive: DEBUG
+    org.hibernate.SQL: INFO

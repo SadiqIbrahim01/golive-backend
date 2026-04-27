@@ -1,0 +1,27 @@
+spring:
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 30000
+      idle-timeout: 600000
+      pool-name: GoLiveHikariPool-Prod
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+    show-sql: false
+
+livekit:
+  url: ${LIVEKIT_URL}
+  api-key: ${LIVEKIT_API_KEY}
+  api-secret: ${LIVEKIT_API_SECRET}
+
+logging:
+  level:
+    root: WARN
+    com.golive: INFO

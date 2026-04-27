@@ -31,3 +31,33 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# ============================================================
+# GoLive Backend — .gitignore
+# ============================================================
+
+# Maven build output
+*.class
+*.jar
+*.war
+
+# Local config — NEVER commit these
+application-local.yml
+.env
+.env.local
+*.env
+
+# IDE files
+.idea/
+*.swp
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Spring Boot devtools restart trigger
+.spring-boot-devtools.properties
