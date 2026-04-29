@@ -1,7 +1,6 @@
 package com.golivebackend.common.exception;
 
 import com.golivebackend.livekit.service.UnauthorisedHostException;
-import com.golivebackend.stream.service.StreamNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -13,36 +12,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Centralised exception handling for all controllers.
- *
- * @RestControllerAdvice intercepts exceptions thrown by any
- * @RestController and routes them here before they reach the client.
- *
- * WITHOUT THIS:
- * Spring Boot returns a generic Whitelabel Error Page or a default
- * JSON error with Hibernate internals exposed — information leakage.
- *
- * WITH THIS:
- * Every error returns a consistent, safe JSON structure.
- * Stack traces never reach the client.
- * HTTP status codes are semantically correct.
- *
- * ERROR RESPONSE SHAPE (consistent across all errors):
- * {
- *   "status": 404,
- *   "error": "Not Found",
- *   "message": "Stream not found with id: ...",
- *   "timestamp": "2024-01-15T13:30:00Z"
- * }
- */
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
     /**
      * 404 — Stream not found.
-     * Thrown by StreamService when a stream ID doesn't exist in DB.
+     * Now catches the single shared StreamNotFoundException from common.
+     * No ambiguity — one exception class, one handler.
      */
     @ExceptionHandler(StreamNotFoundException.class)
     public ResponseEntity<Map<String, Object>> handleStreamNotFound(
@@ -53,12 +30,18 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 400 — Validation failure.
-     * Thrown when @Valid on a controller parameter fails.
-     * E.g. blank title, title too short.
-     *
-     * We extract all validation messages and return them as a list
-     * so the frontend can display each field error specifically.
+     * 403 — Invalid or missing host key.
+     */
+    @ExceptionHandler(UnauthorisedHostException.class)
+    public ResponseEntity<Map<String, Object>> handleUnauthorisedHost(
+            UnauthorisedHostException ex
+    ) {
+        log.warn("Unauthorised host attempt: {}", ex.getMessage());
+        return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage());
+    }
+
+    /**
+     * 400 — Bean Validation failure (@Valid on controller params).
      */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidationFailure(
@@ -83,22 +66,20 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 409 — Illegal state transition.
-     * Thrown by Stream.start() or Stream.end() when the status
-     * transition is invalid (e.g. starting an ENDED stream).
+     * 409 — Illegal stream state transition.
+     * Thrown by Stream.start() or Stream.end() domain methods.
      */
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalState(
             IllegalStateException ex
     ) {
-        log.warn("Illegal state: {}", ex.getMessage());
+        log.warn("Illegal state transition: {}", ex.getMessage());
         return buildResponse(HttpStatus.CONFLICT, ex.getMessage());
     }
 
     /**
-     * 500 — Catch-all for unexpected exceptions.
-     * Logs the full stack trace internally.
-     * Returns a generic message to the client — no internals exposed.
+     * 500 — Catch-all for anything unexpected.
+     * Stack trace logged internally. Generic message to client.
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleUnexpected(
@@ -109,39 +90,6 @@ public class GlobalExceptionHandler {
                 HttpStatus.INTERNAL_SERVER_ERROR,
                 "An unexpected error occurred. Please try again."
         );
-    }
-
-    /**
-     * 404 — Stream not found during token generation.
-     * Catches both com.golivebackend.stream.service.StreamNotFoundException
-     * and com.golivebackend.livekit.service.StreamNotFoundException.
-     * We catch by simple name match — both extend RuntimeException
-     * and carry the same semantic meaning.
-     */
-    @ExceptionHandler({
-            com.golivebackend.stream.service.StreamNotFoundException.class,
-            com.golivebackend.livekit.service.StreamNotFoundException.class
-    })
-    public ResponseEntity<Map<String, Object>> handleStreamNotFound(
-            RuntimeException ex
-    ) {
-        log.warn("Stream not found: {}", ex.getMessage());
-        return buildResponse(HttpStatus.NOT_FOUND, ex.getMessage());
-    }
-
-    /**
-     * 403 — Invalid host key.
-     * Returns Forbidden rather than Unauthorized (401) because:
-     *   - 401 means "you need to authenticate"
-     *   - 403 means "you authenticated but you're not allowed"
-     * The host provided a key — it's just the wrong one.
-     */
-    @ExceptionHandler(UnauthorisedHostException.class)
-    public ResponseEntity<Map<String, Object>> handleUnauthorisedHost(
-            UnauthorisedHostException ex
-    ) {
-        log.warn("Unauthorised host attempt: {}", ex.getMessage());
-        return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage());
     }
 
     private ResponseEntity<Map<String, Object>> buildResponse(
