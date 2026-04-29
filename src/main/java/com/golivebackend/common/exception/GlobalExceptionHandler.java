@@ -1,5 +1,6 @@
 package com.golivebackend.common.exception;
 
+import com.golivebackend.livekit.service.UnauthorisedHostException;
 import com.golivebackend.stream.service.StreamNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -108,6 +109,39 @@ public class GlobalExceptionHandler {
                 HttpStatus.INTERNAL_SERVER_ERROR,
                 "An unexpected error occurred. Please try again."
         );
+    }
+
+    /**
+     * 404 — Stream not found during token generation.
+     * Catches both com.golivebackend.stream.service.StreamNotFoundException
+     * and com.golivebackend.livekit.service.StreamNotFoundException.
+     * We catch by simple name match — both extend RuntimeException
+     * and carry the same semantic meaning.
+     */
+    @ExceptionHandler({
+            com.golivebackend.stream.service.StreamNotFoundException.class,
+            com.golivebackend.livekit.service.StreamNotFoundException.class
+    })
+    public ResponseEntity<Map<String, Object>> handleStreamNotFound(
+            RuntimeException ex
+    ) {
+        log.warn("Stream not found: {}", ex.getMessage());
+        return buildResponse(HttpStatus.NOT_FOUND, ex.getMessage());
+    }
+
+    /**
+     * 403 — Invalid host key.
+     * Returns Forbidden rather than Unauthorized (401) because:
+     *   - 401 means "you need to authenticate"
+     *   - 403 means "you authenticated but you're not allowed"
+     * The host provided a key — it's just the wrong one.
+     */
+    @ExceptionHandler(UnauthorisedHostException.class)
+    public ResponseEntity<Map<String, Object>> handleUnauthorisedHost(
+            UnauthorisedHostException ex
+    ) {
+        log.warn("Unauthorised host attempt: {}", ex.getMessage());
+        return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage());
     }
 
     private ResponseEntity<Map<String, Object>> buildResponse(
