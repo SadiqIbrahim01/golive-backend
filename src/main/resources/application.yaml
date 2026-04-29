@@ -39,3 +39,12 @@ logging:
     root: INFO
     com.golive: DEBUG
     org.hibernate.SQL: INFO
+
+# ----------------------------------------------------------
+# CORS Configuration
+# ----------------------------------------------------------
+cors:
+  # Override per profile.
+  # local  → application-local.yml sets localhost:3000
+  # prod   → application-prod.yml reads FRONTEND_URL env var
+  allowed-origins: ${cors.allowed-origins}
