@@ -95,4 +95,50 @@ public class StreamController {
         log.debug("GET /streams?status={}", status);
         return ResponseEntity.ok(streamService.findLiveStreams());
     }
+
+    /**
+     * PATCH /api/streams/{id}/start
+     *
+     * Transitions stream from CREATED → LIVE.
+     *
+     * WHY PATCH AND NOT POST OR PUT?
+     * - POST   → creates a new resource
+     * - PUT    → replaces an entire resource
+     * - PATCH  → applies a partial update to a resource
+     *
+     * We're changing one field (status) on an existing resource.
+     * PATCH is semantically correct.
+     *
+     * @RequestHeader("X-Host-Key"): Spring extracts the value of the
+     * X-Host-Key header and passes it as a String parameter.
+     * If the header is missing entirely, Spring returns 400 Bad Request
+     * before our method runs.
+     *
+     * required = false: we handle the missing case ourselves in the
+     * service so we can return 403 (not 400) — more semantically
+     * correct for an auth failure than a bad request error.
+     */
+    @PatchMapping("/{id}/start")
+    public ResponseEntity<StreamResponse> startStream(
+            @PathVariable("id") UUID streamId,
+            @RequestHeader(value = "X-Host-Key", required = false) String hostKey
+    ) {
+        log.info("PATCH /streams/{}/start", streamId);
+        return ResponseEntity.ok(streamService.startStream(streamId, hostKey));
+    }
+
+    /**
+     * PATCH /api/streams/{id}/end
+     *
+     * Transitions stream from LIVE → ENDED.
+     * Same hostKey validation pattern as /start.
+     */
+    @PatchMapping("/{id}/end")
+    public ResponseEntity<StreamResponse> endStream(
+            @PathVariable("id") UUID streamId,
+            @RequestHeader(value = "X-Host-Key", required = false) String hostKey
+    ) {
+        log.info("PATCH /streams/{}/end", streamId);
+        return ResponseEntity.ok(streamService.endStream(streamId, hostKey));
+    }
 }

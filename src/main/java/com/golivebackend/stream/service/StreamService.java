@@ -1,5 +1,6 @@
 package com.golivebackend.stream.service;
 
+import com.golivebackend.livekit.service.UnauthorisedHostException;
 import com.golivebackend.stream.dto.StreamRequest;
 import com.golivebackend.stream.dto.StreamResponse;
 import com.golivebackend.stream.model.Stream;
@@ -139,6 +140,120 @@ public class StreamService {
          * Callers receive a snapshot — they can't add/remove from it.
          * Matches our intent: this is a read-only query result.
          */
+    }
+
+    /**
+     * Transitions a stream from CREATED → LIVE.
+     *
+     * Called when the host opens their host URL and clicks Go Live.
+     * After this call, the stream appears in GET /api/streams?status=LIVE.
+     *
+     * VALIDATION ORDER (matters — we fail fast on cheapest checks first):
+     *   1. Does the stream exist?        → DB lookup   (404 if not)
+     *   2. Is the hostKey correct?       → String compare (403 if not)
+     *   3. Is the transition valid?      → domain method  (409 if not)
+     *
+     * @param streamId  the public stream identifier from the URL path
+     * @param hostKey   from the X-Host-Key request header
+     * @return public stream response (no hostKey in response)
+     */
+    @Transactional
+    public StreamResponse startStream(UUID streamId, String hostKey) {
+        log.info("Start request — streamId: {}", streamId);
+
+        Stream stream = loadAndAuthoriseStream(streamId, hostKey);
+
+        /*
+         * stream.start() enforces the CREATED → LIVE transition.
+         * Throws IllegalStateException if status is not CREATED.
+         * GlobalExceptionHandler maps this to 409 Conflict.
+         *
+         * We don't check status here — that's the domain's job.
+         * The service trusts the entity to enforce its own rules.
+         * This is the Rich Domain Model pattern paying off.
+         */
+        stream.start();
+
+        Stream saved = streamRepository.save(stream);
+
+        log.info("Stream started — streamId: {}, status: {}",
+                saved.getStreamId(), saved.getStatus());
+
+        return StreamResponse.toPublicResponse(saved);
+    }
+
+    /**
+     * Transitions a stream from LIVE → ENDED.
+     *
+     * Called when the host clicks End Stream.
+     * After this call, the stream disappears from the live listing
+     * and no new tokens can be issued for it.
+     *
+     * @param streamId  the public stream identifier from the URL path
+     * @param hostKey   from the X-Host-Key request header
+     * @return public stream response reflecting ENDED status
+     */
+    @Transactional
+    public StreamResponse endStream(UUID streamId, String hostKey) {
+        log.info("End request — streamId: {}", streamId);
+
+        Stream stream = loadAndAuthoriseStream(streamId, hostKey);
+
+        stream.end();
+
+        Stream saved = streamRepository.save(stream);
+
+        log.info("Stream ended — streamId: {}, status: {}",
+                saved.getStreamId(), saved.getStatus());
+
+        return StreamResponse.toPublicResponse(saved);
+    }
+
+// =========================================================
+// PRIVATE — Shared authorisation logic
+// =========================================================
+
+    /**
+     * Loads a stream by ID and validates the hostKey in one step.
+     *
+     * WHY A PRIVATE SHARED METHOD?
+     * Both startStream() and endStream() need the same two checks:
+     *   1. Stream exists
+     *   2. Caller is the legitimate host
+     *
+     * Extracting this prevents the checks from drifting out of sync
+     * if one method is updated without the other.
+     * DRY (Don't Repeat Yourself) applied correctly — not just
+     * avoiding code duplication, but ensuring the security check
+     * is never accidentally omitted on a lifecycle endpoint.
+     *
+     * @throws StreamNotFoundException    if stream doesn't exist (→ 404)
+     * @throws UnauthorisedHostException  if hostKey is wrong    (→ 403)
+     */
+    private Stream loadAndAuthoriseStream(UUID streamId, String hostKey) {
+        Stream stream = streamRepository
+                .findByStreamId(streamId)
+                .orElseThrow(() -> new StreamNotFoundException(
+                        "Stream not found with id: " + streamId
+                ));
+
+        /*
+         * Null/blank check first — prevents NullPointerException
+         * on the .equals() call and gives a clearer error message.
+         */
+        if (hostKey == null || hostKey.isBlank()) {
+            throw new UnauthorisedHostException(
+                    "X-Host-Key header is required"
+            );
+        }
+
+        if (!stream.getHostKey().equals(hostKey)) {
+            throw new UnauthorisedHostException(
+                    "Invalid host key for stream: " + streamId
+            );
+        }
+
+        return stream;
     }
 
     // =========================================================
