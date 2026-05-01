@@ -42,7 +42,7 @@ import java.util.Properties;
          * Being explicit here means Spring doesn't scan your entire codebase —
          * faster startup and no accidental repository detection in wrong packages.
          */
-        basePackages = "com.golive"
+        basePackages = "com.golivebackend"
 )
 @EnableTransactionManagement
 public class DatabaseConfig {
@@ -179,7 +179,7 @@ public class DatabaseConfig {
          * Every class annotated with @Entity in com.golive and below
          * will be picked up and mapped to the database.
          */
-        factory.setPackagesToScan("com.golive");
+        factory.setPackagesToScan("com.golivebackend");
 
         /*
          * HibernateJpaVendorAdapter bridges Spring's JPA abstraction
@@ -224,18 +224,6 @@ public class DatabaseConfig {
      */
     private Properties hibernateProperties() {
         Properties properties = new Properties();
-
-        /*
-         * Tells Hibernate which SQL dialect to generate.
-         * PostgreSQLDialect enables PostgreSQL-specific features:
-         * - SERIAL / BIGSERIAL for auto-increment
-         * - JSONB column types
-         * - PostgreSQL-specific functions
-         */
-        properties.setProperty(
-                "hibernate.dialect",
-                "org.hibernate.dialect.PostgreSQLDialect"
-        );
 
         /*
          * DDL auto strategy — controls schema management.
