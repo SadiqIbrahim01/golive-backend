@@ -38,7 +38,7 @@ public class CorsConfig implements WebMvcConfigurer {
      * String[] because allowedOrigins() takes varargs —
      * multiple origins can be allowed simultaneously.
      */
-    @Value("${cors.allowed-origins}")
+    @Value("#{'${cors.allowed-origin}'.split(',')}")
     private String[] allowedOrigins;
 
     @Override

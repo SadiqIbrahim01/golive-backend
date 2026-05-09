@@ -48,9 +48,8 @@ public class StreamController {
      * API gateways can use this distinction.
      */
     @PostMapping
-    public ResponseEntity<StreamResponse> createStream(
-            @Valid @RequestBody StreamRequest request
-    ) {
+    public ResponseEntity<StreamResponse> createStream(@Valid @RequestBody StreamRequest request) {
+        System.out.println("crating stream with title"+ request.title());
         log.info("POST /streams — creating stream with title: {}", request.title());
         StreamResponse response = streamService.createStream(request);
         return ResponseEntity
@@ -119,10 +118,7 @@ public class StreamController {
      * correct for an auth failure than a bad request error.
      */
     @PatchMapping("/{id}/start")
-    public ResponseEntity<StreamResponse> startStream(
-            @PathVariable("id") UUID streamId,
-            @RequestHeader(value = "X-Host-Key", required = false) String hostKey
-    ) {
+    public ResponseEntity<StreamResponse> startStream(@PathVariable("id") UUID streamId, @RequestHeader(value = "X-Host-Key", required = false) String hostKey) {
         log.info("PATCH /streams/{}/start", streamId);
         return ResponseEntity.ok(streamService.startStream(streamId, hostKey));
     }
@@ -134,10 +130,7 @@ public class StreamController {
      * Same hostKey validation pattern as /start.
      */
     @PatchMapping("/{id}/end")
-    public ResponseEntity<StreamResponse> endStream(
-            @PathVariable("id") UUID streamId,
-            @RequestHeader(value = "X-Host-Key", required = false) String hostKey
-    ) {
+    public ResponseEntity<StreamResponse> endStream(@PathVariable("id") UUID streamId, @RequestHeader(value = "X-Host-Key", required = false) String hostKey) {
         log.info("PATCH /streams/{}/end", streamId);
         return ResponseEntity.ok(streamService.endStream(streamId, hostKey));
     }

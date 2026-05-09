@@ -42,7 +42,7 @@ build/
 *.war
 
 # Local config — NEVER commit these
-application-local.yml
+src/main/resources/application.yml
 .env
 .env.local
 *.env
@@ -61,3 +61,6 @@ logs/
 
 # Spring Boot devtools restart trigger
 .spring-boot-devtools.properties
+
+docker-compose.yml
+backend.zip
