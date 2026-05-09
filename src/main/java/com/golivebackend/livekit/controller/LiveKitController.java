@@ -58,12 +58,9 @@ public class LiveKitController {
      * A JWT token is ephemeral — it exists in memory, not in the DB.
      */
     @PostMapping("/token")
-    public ResponseEntity<TokenResponse> generateToken(
-            @Valid @RequestBody TokenRequest request
-    ) {
+    public ResponseEntity<TokenResponse> generateToken(@Valid @RequestBody TokenRequest request) {
         log.info("POST /livekit/token — streamId: {}, role: {}",
                 request.streamId(), request.role());
-
         return ResponseEntity.ok(liveKitTokenService.generateToken(request));
     }
 }

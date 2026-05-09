@@ -26,7 +26,7 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 @EnableWebSocketMessageBroker
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
-    @Value("${cors.allowed-origins}")
+    @Value("#{'${cors.allowed-origin}'.split(',')}")
     private String[] allowedOrigins;
 
     /**

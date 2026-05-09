@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public record StreamResponse(
 
-        UUID streamId,
+        String streamId,
         String title,
         StreamStatus status,
         String watchUrl,
@@ -58,7 +58,7 @@ public record StreamResponse(
      */
     public static StreamResponse toPublicResponse(Stream stream) {
         return new StreamResponse(
-                stream.getStreamId(),
+                stream.getStreamId().toString(),
                 stream.getTitle(),
                 stream.getStatus(),
                 buildWatchUrl(stream.getStreamId()),
@@ -79,11 +79,11 @@ public record StreamResponse(
      */
     public static StreamResponse toHostResponse(Stream stream) {
         return new StreamResponse(
-                stream.getStreamId(),
+                stream.getStreamId().toString(),
                 stream.getTitle(),
                 stream.getStatus(),
                 buildWatchUrl(stream.getStreamId()),
-                buildHostUrl(stream.getStreamId()),
+                buildHostUrl( stream.getStreamId(), stream.getHostKey()),
                 stream.getHostKey(),
                 stream.getCreatedAt(),
                 stream.getStartedAt(),
@@ -102,10 +102,10 @@ public record StreamResponse(
      * changes, it changes in one place.
      */
     private static String buildWatchUrl(UUID streamId) {
-        return "http://localhost:3000/watch/" + streamId;
+        return "http://localhost:5173/watch/" + streamId;
     }
 
-    private static String buildHostUrl(UUID streamId) {
-        return "http://localhost:3000/host/" + streamId;
+    private static String buildHostUrl(UUID streamId, String hostKey) {
+        return "http://localhost:5173/stream-setup/" + streamId + "?hostKey=" + hostKey;
     }
 }
