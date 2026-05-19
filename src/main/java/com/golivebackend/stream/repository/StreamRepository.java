@@ -3,6 +3,7 @@ package com.golivebackend.stream.repository;
 import com.golivebackend.stream.model.Stream;
 import com.golivebackend.stream.model.StreamStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -11,110 +12,44 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * Data access layer for Stream entities.
- *
- * WHY EXTENDS JpaRepository AND NOT CrudRepository?
- * JpaRepository extends CrudRepository and adds:
- *   - findAll(Sort) and findAll(Pageable) — for sorted/paginated queries
- *   - saveAll() — batch inserts
- *   - flush() — force immediate DB write within a transaction
- *
- * We extend JpaRepository so pagination is available when we need it
- * (Day 6 production hardening) without changing the interface.
- *
- * Type parameters: <Entity, PrimaryKeyType>
- *   Entity = Stream
- *   PrimaryKeyType = UUID (must match the @Id field type on Stream)
- *
- * @Repository marks this as a Spring-managed bean AND tells Spring to
- * translate JDBC exceptions into Spring's DataAccessException hierarchy.
- * Without it, a PostgreSQL constraint violation would surface as a raw
- * SQLException — harder to handle cleanly in the service layer.
- */
 @Repository
 public interface StreamRepository extends JpaRepository<Stream, UUID> {
 
+    // =========================================================
+    // LOOKUPS
+    // =========================================================
+
     /**
-     * Find a stream by its public ID.
-     *
-     * Returns Optional<Stream> — not Stream directly.
-     *
-     * WHY OPTIONAL?
-     * A stream with the given ID might not exist. Returning null forces
-     * every caller to remember to null-check — and someone will forget.
-     * Optional makes the "might not exist" case explicit in the type system.
-     * The service layer calls .orElseThrow() and decides what error to raise.
-     *
-     * HOW SPRING DERIVES THIS:
-     * "findBy" → SELECT WHERE
-     * "StreamId" → the field name on the Stream entity (streamId)
-     * Spring reads the entity, finds the field, generates the query.
-     *
-     * Generated SQL:
-     *   SELECT * FROM streams WHERE stream_id = ?
+     * Find a stream by its public UUID.
+     * Returns Optional — caller decides what to do if not found.
      */
     Optional<Stream> findByStreamId(UUID streamId);
 
     /**
-     * Find all streams with a given status.
-     *
-     * Used by the home page to list currently LIVE streams.
-     *
-     * WHY List AND NOT Page?
-     * For MVP with a small number of concurrent streams, List is fine.
-     * When concurrent streams grow, we'd change this to:
-     *   Page<Stream> findAllByStatus(StreamStatus status, Pageable pageable);
-     * and pass PageRequest.of(0, 20, Sort.by("createdAt").descending()).
-     *
-     * Generated SQL:
-     *   SELECT * FROM streams WHERE status = ?
-     */
-    List<Stream> findAllByStatus(StreamStatus status);
-
-    /**
-     * Check whether a stream with the given hostKey exists.
-     *
-     * Used as a fast existence check before loading the full entity.
-     * Returns a boolean — cheaper than fetching the whole row when
-     * you only need to know "does this exist?"
-     *
-     * Generated SQL:
-     *   SELECT COUNT(*) > 0 FROM streams WHERE host_key = ?
-     */
-    boolean existsByHostKey(String hostKey);
-
-    /**
      * Find a stream by its hostKey.
-     *
-     * Used on lifecycle endpoints (start/end) where the host
-     * proves identity by providing the hostKey.
-     *
-     * We look up by hostKey rather than by streamId + hostKey separately
-     * because: if the hostKey matches, we already know it's the right stream
-     * (hostKey is unique per stream by design — a UUID).
-     *
-     * Generated SQL:
-     *   SELECT * FROM streams WHERE host_key = ?
+     * Used to validate host identity on lifecycle endpoints.
      */
     Optional<Stream> findByHostKey(String hostKey);
 
     /**
-     * Find all LIVE streams ordered by most recently started.
-     *
-     * WHY A CUSTOM @QUERY HERE?
-     * Spring could derive: findAllByStatusOrderByStartedAtDesc(StreamStatus)
-     * but that method name is 47 characters — unclear and brittle.
-     * When derivation produces unreadable names, write explicit JPQL.
-     *
-     * JPQL vs SQL:
-     *   SQL   → talks to tables and columns  (streams, started_at)
-     *   JPQL  → talks to entities and fields (Stream,  startedAt)
-     * JPQL is database-agnostic — if you ever moved from PostgreSQL
-     * to another DB, this query works unchanged.
-     *
-     * @Param("status") binds the method parameter to the :status
-     * placeholder in the JPQL string.
+     * Check whether a stream with the given hostKey exists.
+     * Cheaper than loading the full entity when you only need existence.
+     */
+    boolean existsByHostKey(String hostKey);
+
+    // =========================================================
+    // LISTINGS
+    // =========================================================
+
+    /**
+     * Returns all streams with the given status.
+     * Used internally — prefer the JPQL query below for LIVE listings.
+     */
+    List<Stream> findAllByStatus(StreamStatus status);
+
+    /**
+     * Returns all LIVE streams ordered by most recently started.
+     * Used by GET /api/streams (no query param).
      */
     @Query("""
             SELECT s FROM Stream s
@@ -124,4 +59,49 @@ public interface StreamRepository extends JpaRepository<Stream, UUID> {
     List<Stream> findLiveStreamsOrderedByStartTime(
             @Param("status") StreamStatus status
     );
+
+    // =========================================================
+    // SEARCH
+    // =========================================================
+
+    /**
+     * Case-insensitive search across title and category.
+     * Only returns LIVE streams.
+     * Used by GET /api/streams?query={value}
+     *
+     * :query must be passed with % wildcards from the service layer.
+     * Example: service passes "%java%" → matches "Java Coding"
+     */
+    @Query("""
+            SELECT s FROM Stream s
+            WHERE s.status = 'LIVE'
+            AND (
+                LOWER(s.title)    LIKE LOWER(:query)
+                OR
+                LOWER(s.category) LIKE LOWER(:query)
+            )
+            ORDER BY s.startedAt DESC
+            """)
+    List<Stream> searchLiveStreams(@Param("query") String query);
+
+    // =========================================================
+    // VIEWER COUNT — atomic operations
+    // =========================================================
+
+    /**
+     * Atomically increments viewer count by 1.
+     * Called on WebSocket subscribe event.
+     */
+    @Modifying
+    @Query("UPDATE Stream s SET s.viewerCount = s.viewerCount + 1 WHERE s.streamId = :id")
+    void incrementViewerCount(@Param("id") UUID id);
+
+    /**
+     * Atomically decrements viewer count by 1, floor at 0.
+     * GREATEST() prevents negative values at the DB level.
+     * Called on WebSocket disconnect event.
+     */
+    @Modifying
+    @Query("UPDATE Stream s SET s.viewerCount = GREATEST(s.viewerCount - 1, 0) WHERE s.streamId = :id")
+    void decrementViewerCount(@Param("id") UUID id);
 }
