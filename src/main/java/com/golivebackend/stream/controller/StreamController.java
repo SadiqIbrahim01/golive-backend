@@ -3,9 +3,11 @@ package com.golivebackend.stream.controller;
 import com.golivebackend.stream.dto.StreamRequest;
 import com.golivebackend.stream.dto.StreamResponse;
 import com.golivebackend.stream.service.StreamService;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -13,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @RestController
@@ -26,12 +29,11 @@ public class StreamController {
     // STREAM CRUD
     // =========================================================
 
-    /**
-     * POST /api/streams
-     * Creates a new stream. Returns 201 with host credentials.
-     * hostKey is only ever returned here — never again after this.
-     */
     @PostMapping
+    @RateLimiter(
+            name = "stream-creation",
+            fallbackMethod = "rateLimitedResponse"
+    )
     public ResponseEntity<StreamResponse> createStream(
             @Valid @RequestBody StreamRequest request
     ) {
@@ -44,118 +46,139 @@ public class StreamController {
     }
 
     /**
-     * GET /api/streams/{id}
-     * Returns public stream details. hostKey never included.
+     * GET /streams/{id}
+     * Cached for 3 seconds (high-frequency updates: likes/viewers)
      */
     @GetMapping("/{id}")
     public ResponseEntity<StreamResponse> getStream(
             @PathVariable("id") UUID streamId
     ) {
         log.debug("GET /streams/{}", streamId);
-        return ResponseEntity.ok(streamService.findById(streamId));
+
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.maxAge(3, TimeUnit.SECONDS).cachePublic())
+                .body(streamService.findById(streamId));
     }
 
     /**
-     * GET /api/streams
-     * GET /api/streams?query=gaming
-     *
-     * Without query: returns all LIVE streams ordered by start time.
-     * With query:    returns LIVE streams where title or category
-     *                matches the search term (case-insensitive).
-     *
-     * Always LIVE only — CREATED and ENDED streams are never returned.
+     * GET /streams
+     * Cached for 5 seconds (stream listing endpoint)
      */
     @GetMapping
     public ResponseEntity<List<StreamResponse>> getStreams(
             @RequestParam(required = false) String query
     ) {
+
         if (query != null && !query.isBlank()) {
+
+            if (query.trim().length() < 2) {
+                log.warn("Rejected search query — too short: {}", query);
+                return ResponseEntity.badRequest().build();
+            }
+
             log.debug("GET /streams?query={}", query);
-            return ResponseEntity.ok(streamService.searchStreams(query));
+
+            return ResponseEntity.ok()
+                    .cacheControl(CacheControl.maxAge(5, TimeUnit.SECONDS).cachePublic())
+                    .body(streamService.searchStreams(query));
         }
+
         log.debug("GET /streams — listing all LIVE streams");
-        return ResponseEntity.ok(streamService.findLiveStreams());
+
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.maxAge(5, TimeUnit.SECONDS).cachePublic())
+                .body(streamService.findLiveStreams());
     }
 
     // =========================================================
     // STREAM LIFECYCLE
     // =========================================================
 
-    /**
-     * PATCH /api/streams/{id}/start
-     * Transitions stream CREATED → LIVE.
-     * Requires X-Host-Key header matching the stream's hostKey.
-     */
     @PatchMapping("/{id}/start")
     public ResponseEntity<StreamResponse> startStream(
             @PathVariable("id") UUID streamId,
             @RequestHeader(value = "X-Host-Key", required = false) String hostKey
     ) {
         log.info("PATCH /streams/{}/start", streamId);
-        return ResponseEntity.ok(streamService.startStream(streamId, hostKey));
+
+        return ResponseEntity.ok(
+                streamService.startStream(streamId, hostKey)
+        );
     }
 
-    /**
-     * PATCH /api/streams/{id}/end
-     * Transitions stream LIVE → ENDED.
-     * Requires X-Host-Key header matching the stream's hostKey.
-     */
     @PatchMapping("/{id}/end")
     public ResponseEntity<StreamResponse> endStream(
             @PathVariable("id") UUID streamId,
             @RequestHeader(value = "X-Host-Key", required = false) String hostKey
     ) {
         log.info("PATCH /streams/{}/end", streamId);
-        return ResponseEntity.ok(streamService.endStream(streamId, hostKey));
+
+        return ResponseEntity.ok(
+                streamService.endStream(streamId, hostKey)
+        );
     }
 
     // =========================================================
-    // LIKES
+    // LIKES (UNCHANGED)
     // =========================================================
 
-    /**
-     * PATCH /api/streams/{id}/like
-     * X-Session-Id: {frontend-generated UUID stored in localStorage}
-     *
-     * Idempotent — liking twice from the same session has no effect.
-     * Returns current like count after the operation.
-     */
     @PatchMapping("/{id}/like")
+    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedIntResponse")
     public ResponseEntity<Map<String, Integer>> likeStream(
             @PathVariable("id") UUID streamId,
             @RequestHeader(value = "X-Session-Id", required = false) String sessionId
     ) {
-        log.debug("PATCH /streams/{}/like — sessionId: {}", streamId, sessionId);
 
         if (sessionId == null || sessionId.isBlank()) {
-            log.warn("Like rejected — missing X-Session-Id header");
             return ResponseEntity.badRequest().build();
         }
 
         int likes = streamService.likeStream(streamId, sessionId);
+
         return ResponseEntity.ok(Map.of("likes", likes));
     }
 
-    /**
-     * PATCH /api/streams/{id}/unlike
-     * X-Session-Id: {frontend-generated UUID stored in localStorage}
-     *
-     * Idempotent — unliking when not liked has no effect.
-     * Returns current like count after the operation.
-     */
     @PatchMapping("/{id}/unlike")
+    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedIntResponse")
     public ResponseEntity<Map<String, Integer>> unlikeStream(
             @PathVariable("id") UUID streamId,
             @RequestHeader(value = "X-Session-Id", required = false) String sessionId
     ) {
-        log.debug("PATCH /streams/{}/unlike — sessionId: {}", streamId, sessionId);
 
         if (sessionId == null || sessionId.isBlank()) {
-            log.warn("Unlike rejected — missing X-Session-Id header");
             return ResponseEntity.badRequest().build();
         }
 
         int likes = streamService.unlikeStream(streamId, sessionId);
+
         return ResponseEntity.ok(Map.of("likes", likes));
+    }
+
+    // =========================================================
+    // RATE LIMIT FALLBACKS
+    // =========================================================
+
+    public ResponseEntity<StreamResponse> rateLimitedResponse(
+            StreamRequest request,
+            Throwable t
+    ) {
+        log.warn("Stream creation rate limit exceeded: {}", t.getMessage());
+
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                .build();
+    }
+
+    public ResponseEntity<Map<String, Integer>> rateLimitedIntResponse(
+            UUID streamId,
+            String sessionId,
+            Throwable t
+    ) {
+        log.warn("Like rate limit exceeded — streamId: {}, sessionId: {}",
+                streamId, sessionId);
+
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                .build();
     }
 }

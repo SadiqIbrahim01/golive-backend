@@ -84,24 +84,48 @@ public interface StreamRepository extends JpaRepository<Stream, UUID> {
             """)
     List<Stream> searchLiveStreams(@Param("query") String query);
 
-    // =========================================================
-    // VIEWER COUNT — atomic operations
-    // =========================================================
+    // ─── VIEWER COUNT ─────────────────────────────────────────────────────────
 
-    /**
-     * Atomically increments viewer count by 1.
-     * Called on WebSocket subscribe event.
-     */
     @Modifying
     @Query("UPDATE Stream s SET s.viewerCount = s.viewerCount + 1 WHERE s.streamId = :id")
     void incrementViewerCount(@Param("id") UUID id);
 
     /**
-     * Atomically decrements viewer count by 1, floor at 0.
-     * GREATEST() prevents negative values at the DB level.
-     * Called on WebSocket disconnect event.
+     * FIXED: was JPQL with GREATEST() — not valid JPQL.
+     * nativeQuery = true sends raw SQL directly to PostgreSQL.
+     * GREATEST(viewer_count - 1, 0) ensures the count never goes below zero.
      */
     @Modifying
-    @Query("UPDATE Stream s SET s.viewerCount = GREATEST(s.viewerCount - 1, 0) WHERE s.streamId = :id")
+    @Query(
+            value = "UPDATE streams SET viewer_count = GREATEST(viewer_count - 1, 0) WHERE stream_id = :id",
+            nativeQuery = true
+    )
     void decrementViewerCount(@Param("id") UUID id);
+
+// ─── LIKES ────────────────────────────────────────────────────────────────
+
+    @Modifying
+    @Query("UPDATE Stream s SET s.likesCount = s.likesCount + 1 WHERE s.streamId = :id")
+    void incrementLikes(@Param("id") UUID id);
+
+    /**
+     * FIXED: same issue as decrementViewerCount.
+     * GREATEST(likes_count - 1, 0) prevents negative like counts
+     * under any concurrent decrement scenario.
+     */
+    @Modifying
+    @Query(
+            value = "UPDATE streams SET likes_count = GREATEST(likes_count - 1, 0) WHERE stream_id = :id",
+            nativeQuery = true
+    )
+    void decrementLikes(@Param("id") UUID id);
+
+    /**
+     * Resets viewer count for all LIVE streams.
+     * Called on application startup to correct stale counts
+     * left over from a previous server instance.
+     */
+    @Modifying
+    @Query("UPDATE Stream s SET s.viewerCount = 0 WHERE s.status = 'LIVE'")
+    void resetViewerCountsForLiveStreams();
 }

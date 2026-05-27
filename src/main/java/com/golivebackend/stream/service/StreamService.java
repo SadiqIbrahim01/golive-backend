@@ -12,6 +12,8 @@ import com.golivebackend.stream.repository.StreamLikeRepository;
 import com.golivebackend.stream.repository.StreamRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,6 +28,7 @@ public class StreamService {
 
     private final StreamRepository streamRepository;
     private final StreamLikeRepository streamLikeRepository;
+    private final SimpMessagingTemplate messagingTemplate;
 
     // =========================================================
     // STREAM CRUD
@@ -51,6 +54,10 @@ public class StreamService {
         StreamType streamType = request.streamType() != null
                 ? request.streamType()
                 : StreamType.SCREEN_SHARE;
+
+        String normalisedCategory = request.category() != null
+                ? request.category().trim().toLowerCase()
+                : null;
 
         Stream stream = Stream.create(
                 roomName,
@@ -170,8 +177,30 @@ public class StreamService {
 
         Stream saved = streamRepository.save(stream);
 
-        log.info("Stream ended — streamId: {}, status: {}",
-                saved.getStreamId(), saved.getStatus());
+        /*
+         * Notify all connected viewers that the stream has ended.
+         * The frontend should listen for messages of type STREAM_ENDED
+         * on the chat topic and redirect the viewer appropriately.
+         *
+         * We broadcast to the same topic viewers are already subscribed to
+         * — no new subscription required on the frontend.
+         *
+         * WHY AFTER save() AND NOT BEFORE?
+         * The DB must reflect ENDED status before we tell clients.
+         * If we broadcast first and the save fails, clients think the
+         * stream ended but our DB still shows LIVE — inconsistent state.
+         */
+        messagingTemplate.convertAndSend(
+                "/topic/streams/" + streamId + "/chat",
+                java.util.Map.of(
+                        "type", "STREAM_ENDED",
+                        "stream_id", streamId.toString(),
+                        "timestamp", java.time.Instant.now().toString()
+                )
+        );
+
+        log.info("Stream ended — streamId: {}, broadcast sent to subscribers",
+                saved.getStreamId());
 
         return StreamResponse.toPublicResponse(saved);
     }
@@ -180,15 +209,6 @@ public class StreamService {
     // LIKES
     // =========================================================
 
-    /**
-     * Records a like for this stream from the given session.
-     * Idempotent — if this session already liked this stream,
-     * the count does not change and no error is thrown.
-     *
-     * @param streamId  stream to like
-     * @param sessionId frontend-generated UUID from X-Session-Id header
-     * @return current likes count after the operation
-     */
     @Transactional
     public int likeStream(UUID streamId, String sessionId) {
         Stream stream = streamRepository.findByStreamId(streamId)
@@ -196,29 +216,40 @@ public class StreamService {
                         "Stream not found: " + streamId));
 
         if (streamLikeRepository.existsBySessionIdAndStream(sessionId, stream)) {
-            log.debug("Session {} already liked stream {} — no change",
+            log.debug("Session {} already liked stream {} — returning current count",
                     sessionId, streamId);
             return stream.getLikesCount();
         }
 
-        StreamLike like = StreamLike.builder()
-                .sessionId(sessionId)
-                .stream(stream)
-                .createdAt(Instant.now())
-                .build();
+        try {
+            StreamLike like = StreamLike.builder()
+                    .sessionId(sessionId)
+                    .stream(stream)
+                    .createdAt(Instant.now())
+                    .build();
 
-        streamLikeRepository.save(like);
-        streamLikeRepository.incrementLikes(streamId);
+            /*
+             * saveAndFlush forces immediate DB write within this transaction.
+             * If the unique constraint is violated (concurrent like from same session),
+             * DataIntegrityViolationException is thrown HERE — inside the try block —
+             * rather than at transaction commit time where we can't catch it cleanly.
+             */
+            streamLikeRepository.saveAndFlush(like);
+            streamLikeRepository.incrementLikes(streamId);
 
-        log.info("Stream {} liked by session {}", streamId, sessionId);
+            log.info("Stream {} liked by session {}", streamId, sessionId);
+            return stream.getLikesCount() + 1;
 
-        /*
-         * We return count + 1 because the @Modifying query updated
-         * the DB but the in-memory 'stream' object still holds
-         * the old value. We don't reload from DB to avoid an extra
-         * round trip — the arithmetic is reliable here.
-         */
-        return stream.getLikesCount() + 1;
+        } catch (DataIntegrityViolationException e) {
+            /*
+             * Concurrent like from the same session hit the unique constraint.
+             * This is not an error — it means the like was already recorded
+             * by a concurrent request. Return the current count unchanged.
+             * Log at debug — this will happen in normal usage under load.
+             */
+            log.debug("Concurrent like ignored — session {} stream {}", sessionId, streamId);
+            return stream.getLikesCount();
+        }
     }
 
     /**
