@@ -122,51 +122,47 @@ public class StreamController {
     // LIKES (UNCHANGED)
     // =========================================================
 
+    /**
+     * PATCH /api/streams/{id}/like
+     * No authentication required. No session tracking.
+     * Each call increments the count by 1.
+     */
     @PatchMapping("/{id}/like")
-    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedIntResponse")
+    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedLikeResponse")
     public ResponseEntity<Map<String, Integer>> likeStream(
-            @PathVariable("id") UUID streamId,
-            @RequestHeader(value = "X-Session-Id", required = false) String sessionId
+            @PathVariable("id") UUID streamId
     ) {
-
-        if (sessionId == null || sessionId.isBlank()) {
-            return ResponseEntity.badRequest().build();
-        }
-
-        int likes = streamService.likeStream(streamId, sessionId);
-
-        return ResponseEntity.ok(Map.of("likes", likes));
+        log.debug("PATCH /streams/{}/like", streamId);
+        return ResponseEntity.ok(Map.of("likes", streamService.likeStream(streamId)));
     }
 
+    /**
+     * PATCH /api/streams/{id}/unlike
+     * No authentication required. No session tracking.
+     * Each call decrements the count by 1 (floor at 0).
+     */
     @PatchMapping("/{id}/unlike")
-    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedIntResponse")
+    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedLikeResponse")
     public ResponseEntity<Map<String, Integer>> unlikeStream(
-            @PathVariable("id") UUID streamId,
-            @RequestHeader(value = "X-Session-Id", required = false) String sessionId
+            @PathVariable("id") UUID streamId
     ) {
-
-        if (sessionId == null || sessionId.isBlank()) {
-            return ResponseEntity.badRequest().build();
-        }
-
-        int likes = streamService.unlikeStream(streamId, sessionId);
-
-        return ResponseEntity.ok(Map.of("likes", likes));
+        log.debug("PATCH /streams/{}/unlike", streamId);
+        return ResponseEntity.ok(Map.of("likes", streamService.unlikeStream(streamId)));
     }
 
     // =========================================================
     // RATE LIMIT FALLBACKS
     // =========================================================
 
-    public ResponseEntity<StreamResponse> rateLimitedResponse(
-            StreamRequest request,
-            Throwable t
+    /**
+     * Rate limiter fallback for like/unlike.
+     * Signature must match the method it covers exactly.
+     */
+    public ResponseEntity<Map<String, Integer>> rateLimitedLikeResponse(
+            UUID streamId, Throwable t
     ) {
-        log.warn("Stream creation rate limit exceeded: {}", t.getMessage());
-
-        return ResponseEntity
-                .status(HttpStatus.TOO_MANY_REQUESTS)
-                .build();
+        log.warn("Rate limit exceeded for like/unlike — streamId: {}", streamId);
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build();
     }
 
     public ResponseEntity<Map<String, Integer>> rateLimitedIntResponse(

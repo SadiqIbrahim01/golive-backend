@@ -28,16 +28,6 @@ CREATE TABLE IF NOT EXISTS streams (
     ended_at      TIMESTAMPTZ
     );
 
--- ── STREAM LIKES TABLE ────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS stream_likes (
-                                            like_id     UUID          PRIMARY KEY,
-                                            session_id  VARCHAR(255)  NOT NULL,
-    stream_id   UUID          NOT NULL
-    REFERENCES streams(stream_id) ON DELETE CASCADE,
-    created_at  TIMESTAMPTZ   NOT NULL,
-    CONSTRAINT uq_session_stream_like UNIQUE (session_id, stream_id)
-    );
-
 -- ── INDEXES ───────────────────────────────────────────────────
 
 -- Status filter — used by every listing query
@@ -54,10 +44,6 @@ CREATE INDEX IF NOT EXISTS idx_streams_title_trgm
 
 CREATE INDEX IF NOT EXISTS idx_streams_category_trgm
     ON streams USING gin (lower(category) gin_trgm_ops);
-
--- Like lookup — used by existsBySessionIdAndStream
-CREATE INDEX IF NOT EXISTS idx_stream_likes_session
-    ON stream_likes (session_id, stream_id);
 
 -- ============================================================
 -- Verification query — run after setup to confirm schema

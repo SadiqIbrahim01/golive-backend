@@ -12,7 +12,6 @@ import com.golivebackend.stream.repository.StreamLikeRepository;
 import com.golivebackend.stream.repository.StreamRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -209,74 +208,40 @@ public class StreamService {
     // LIKES
     // =========================================================
 
+    /**
+     * Increments the like count for a stream.
+     * No deduplication — a viewer can like as many times as they choose.
+     * Single atomic DB operation. No race condition possible.
+     */
     @Transactional
-    public int likeStream(UUID streamId, String sessionId) {
+    public int likeStream(UUID streamId) {
         Stream stream = streamRepository.findByStreamId(streamId)
                 .orElseThrow(() -> new StreamNotFoundException(
                         "Stream not found: " + streamId));
 
-        if (streamLikeRepository.existsBySessionIdAndStream(sessionId, stream)) {
-            log.debug("Session {} already liked stream {} — returning current count",
-                    sessionId, streamId);
-            return stream.getLikesCount();
-        }
+        streamRepository.incrementLikes(streamId);
 
-        try {
-            StreamLike like = StreamLike.builder()
-                    .sessionId(sessionId)
-                    .stream(stream)
-                    .createdAt(Instant.now())
-                    .build();
+        log.info("Stream {} liked — new count approx: {}",
+                streamId, stream.getLikesCount() + 1);
 
-            /*
-             * saveAndFlush forces immediate DB write within this transaction.
-             * If the unique constraint is violated (concurrent like from same session),
-             * DataIntegrityViolationException is thrown HERE — inside the try block —
-             * rather than at transaction commit time where we can't catch it cleanly.
-             */
-            streamLikeRepository.saveAndFlush(like);
-            streamLikeRepository.incrementLikes(streamId);
-
-            log.info("Stream {} liked by session {}", streamId, sessionId);
-            return stream.getLikesCount() + 1;
-
-        } catch (DataIntegrityViolationException e) {
-            /*
-             * Concurrent like from the same session hit the unique constraint.
-             * This is not an error — it means the like was already recorded
-             * by a concurrent request. Return the current count unchanged.
-             * Log at debug — this will happen in normal usage under load.
-             */
-            log.debug("Concurrent like ignored — session {} stream {}", sessionId, streamId);
-            return stream.getLikesCount();
-        }
+        return stream.getLikesCount() + 1;
     }
 
     /**
-     * Removes a like for this stream from the given session.
-     * Idempotent — if this session hasn't liked this stream,
-     * the count does not change and no error is thrown.
-     *
-     * @param streamId  stream to unlike
-     * @param sessionId frontend-generated UUID from X-Session-Id header
-     * @return current likes count after the operation
+     * Decrements the like count for a stream.
+     * Floor at 0 enforced by GREATEST() in the native query.
+     * Idempotent only in the sense that it cannot go below zero.
      */
     @Transactional
-    public int unlikeStream(UUID streamId, String sessionId) {
+    public int unlikeStream(UUID streamId) {
         Stream stream = streamRepository.findByStreamId(streamId)
                 .orElseThrow(() -> new StreamNotFoundException(
                         "Stream not found: " + streamId));
 
-        if (!streamLikeRepository.existsBySessionIdAndStream(sessionId, stream)) {
-            log.debug("Session {} has not liked stream {} — no change",
-                    sessionId, streamId);
-            return stream.getLikesCount();
-        }
+        streamRepository.decrementLikes(streamId);
 
-        streamLikeRepository.deleteBySessionIdAndStream(sessionId, stream);
-        streamLikeRepository.decrementLikes(streamId);
-
-        log.info("Stream {} unliked by session {}", streamId, sessionId);
+        log.info("Stream {} unliked — new count approx: {}",
+                streamId, Math.max(stream.getLikesCount() - 1, 0));
 
         return Math.max(stream.getLikesCount() - 1, 0);
     }
