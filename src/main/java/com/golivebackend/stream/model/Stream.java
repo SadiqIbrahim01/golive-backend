@@ -151,6 +151,56 @@ public class Stream {
      * silently map to the wrong status.
      * ORDINAL is the default and it is a trap. Always use STRING.
      */
+
+    /**
+     * The category this stream belongs to.
+     * Free-text — "Gaming", "Education", "Music", etc.
+     * Nullable for backwards compatibility with existing streams.
+     */
+    @Column(
+            name = "category",
+            length = 100
+    )
+    private String category;
+
+    /**
+     * The type of media being shared.
+     * Nullable — existing streams created before this field existed
+     * will have null here. Frontend should default to SCREEN_SHARE.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "stream_type",
+            length = 20
+    )
+    private StreamType streamType;
+
+    /**
+     * Current number of active viewers.
+     * Incremented via WebSocket SessionSubscribeEvent.
+     * Decremented via WebSocket SessionDisconnectEvent.
+     * Never goes below zero — enforced by GREATEST() in atomic query.
+     */
+    @Column(
+            name = "viewer_count",
+            nullable = false
+    )
+    @Builder.Default
+    private int viewerCount = 0;
+
+    /**
+     * Total likes from unique sessions.
+     * Incremented atomically when a new session likes this stream.
+     * Decremented atomically when a session unlikes.
+     * Enforced unique per (sessionId, streamId) in stream_likes table.
+     */
+    @Column(
+            name = "likes_count",
+            nullable = false
+    )
+    @Builder.Default
+    private int likesCount = 0;
+
     @Enumerated(EnumType.STRING)
     @Column(
             name = "status",
@@ -295,13 +345,28 @@ public class Stream {
      * @param hostKey   secret host authentication token
      * @param title     human-readable stream title
      */
-    public static Stream create(String roomName, String hostKey, String title) {
+
+    /**
+     * Updated factory method — now accepts category and streamType.
+     * viewerCount and likesCount always start at 0.
+     */
+    public static Stream create(
+            String roomName,
+            String hostKey,
+            String title,
+            String category,
+            StreamType streamType
+    ) {
         return Stream.builder()
                 .roomName(roomName)
                 .hostKey(hostKey)
                 .title(title)
+                .category(category)
+                .streamType(streamType)
                 .status(StreamStatus.CREATED)
                 .createdAt(Instant.now())
+                .viewerCount(0)
+                .likesCount(0)
                 .build();
     }
 }

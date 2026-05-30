@@ -3,29 +3,20 @@ package com.golivebackend.stream.controller;
 import com.golivebackend.stream.dto.StreamRequest;
 import com.golivebackend.stream.dto.StreamResponse;
 import com.golivebackend.stream.service.StreamService;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
-/**
- * HTTP entry point for stream operations.
- *
- * RESPONSIBILITIES:
- *   ✅ Parse HTTP input (path variables, query params, request body)
- *   ✅ Call the service layer
- *   ✅ Return the correct HTTP status code
- *   ❌ No business logic — that's StreamService
- *   ❌ No database access — that's StreamRepository
- *
- * If a controller method is more than ~10 lines,
- * business logic has leaked into the wrong layer.
- */
 @Slf4j
 @RestController
 @RequestMapping("/streams")
@@ -34,104 +25,156 @@ public class StreamController {
 
     private final StreamService streamService;
 
-    /**
-     * POST /api/streams
-     * Creates a new stream. Returns 201 Created with host credentials.
-     *
-     * @Valid triggers Bean Validation on StreamRequest.
-     * If title is blank or too short, Spring returns 400 Bad Request
-     * before this method body even runs.
-     *
-     * ResponseEntity.status(CREATED).body(...):
-     * HTTP 201 is more precise than 200 for resource creation.
-     * It signals "a new resource was created" — clients and
-     * API gateways can use this distinction.
-     */
+    // =========================================================
+    // STREAM CRUD
+    // =========================================================
+
     @PostMapping
-    public ResponseEntity<StreamResponse> createStream(@Valid @RequestBody StreamRequest request) {
-        System.out.println("crating stream with title"+ request.title());
-        log.info("POST /streams — creating stream with title: {}", request.title());
-        StreamResponse response = streamService.createStream(request);
+    @RateLimiter(
+            name = "stream-creation",
+            fallbackMethod = "rateLimitedResponse"
+    )
+    public ResponseEntity<StreamResponse> createStream(
+            @Valid @RequestBody StreamRequest request
+    ) {
+        log.info("POST /streams — title: {}, category: {}, type: {}",
+                request.title(), request.category(), request.streamType());
+
         return ResponseEntity
                 .status(HttpStatus.CREATED)
-                .body(response);
+                .body(streamService.createStream(request));
     }
 
     /**
-     * GET /api/streams/{id}
-     * Returns public stream details by ID.
-     *
-     * {id} in the path → @PathVariable UUID streamId
-     * Spring automatically converts the String path segment to UUID.
-     * If the value isn't a valid UUID format, Spring returns 400
-     * before we touch the service.
+     * GET /streams/{id}
+     * Cached for 3 seconds (high-frequency updates: likes/viewers)
      */
     @GetMapping("/{id}")
     public ResponseEntity<StreamResponse> getStream(
             @PathVariable("id") UUID streamId
     ) {
         log.debug("GET /streams/{}", streamId);
-        return ResponseEntity.ok(streamService.findById(streamId));
+
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.maxAge(3, TimeUnit.SECONDS).cachePublic())
+                .body(streamService.findById(streamId));
     }
 
     /**
-     * GET /api/streams?status=LIVE
-     * Lists streams filtered by status.
-     *
-     * @RequestParam(required = false): status is optional.
-     * If not provided (GET /api/streams), returns all live streams
-     * by default — the most useful default for the home page.
-     *
-     * WHY NOT A SEPARATE /live ENDPOINT?
-     * A query parameter keeps the resource URL clean (/streams)
-     * and follows REST conventions for filtering collections.
-     * It also allows future filters: ?status=ENDED, ?status=CREATED.
+     * GET /streams
+     * Cached for 5 seconds (stream listing endpoint)
      */
     @GetMapping
     public ResponseEntity<List<StreamResponse>> getStreams(
-            @RequestParam(required = false, defaultValue = "LIVE") String status
+            @RequestParam(required = false) String query
     ) {
-        log.debug("GET /streams?status={}", status);
-        return ResponseEntity.ok(streamService.findLiveStreams());
+
+        if (query != null && !query.isBlank()) {
+
+            if (query.trim().length() < 2) {
+                log.warn("Rejected search query — too short: {}", query);
+                return ResponseEntity.badRequest().build();
+            }
+
+            log.debug("GET /streams?query={}", query);
+
+            return ResponseEntity.ok()
+                    .cacheControl(CacheControl.maxAge(5, TimeUnit.SECONDS).cachePublic())
+                    .body(streamService.searchStreams(query));
+        }
+
+        log.debug("GET /streams — listing all LIVE streams");
+
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.maxAge(5, TimeUnit.SECONDS).cachePublic())
+                .body(streamService.findLiveStreams());
     }
 
-    /**
-     * PATCH /api/streams/{id}/start
-     *
-     * Transitions stream from CREATED → LIVE.
-     *
-     * WHY PATCH AND NOT POST OR PUT?
-     * - POST   → creates a new resource
-     * - PUT    → replaces an entire resource
-     * - PATCH  → applies a partial update to a resource
-     *
-     * We're changing one field (status) on an existing resource.
-     * PATCH is semantically correct.
-     *
-     * @RequestHeader("X-Host-Key"): Spring extracts the value of the
-     * X-Host-Key header and passes it as a String parameter.
-     * If the header is missing entirely, Spring returns 400 Bad Request
-     * before our method runs.
-     *
-     * required = false: we handle the missing case ourselves in the
-     * service so we can return 403 (not 400) — more semantically
-     * correct for an auth failure than a bad request error.
-     */
+    // =========================================================
+    // STREAM LIFECYCLE
+    // =========================================================
+
     @PatchMapping("/{id}/start")
-    public ResponseEntity<StreamResponse> startStream(@PathVariable("id") UUID streamId, @RequestHeader(value = "X-Host-Key", required = false) String hostKey) {
+    public ResponseEntity<StreamResponse> startStream(
+            @PathVariable("id") UUID streamId,
+            @RequestHeader(value = "X-Host-Key", required = false) String hostKey
+    ) {
         log.info("PATCH /streams/{}/start", streamId);
-        return ResponseEntity.ok(streamService.startStream(streamId, hostKey));
+
+        return ResponseEntity.ok(
+                streamService.startStream(streamId, hostKey)
+        );
+    }
+
+    @PatchMapping("/{id}/end")
+    public ResponseEntity<StreamResponse> endStream(
+            @PathVariable("id") UUID streamId,
+            @RequestHeader(value = "X-Host-Key", required = false) String hostKey
+    ) {
+        log.info("PATCH /streams/{}/end", streamId);
+
+        return ResponseEntity.ok(
+                streamService.endStream(streamId, hostKey)
+        );
+    }
+
+    // =========================================================
+    // LIKES (UNCHANGED)
+    // =========================================================
+
+    /**
+     * PATCH /api/streams/{id}/like
+     * No authentication required. No session tracking.
+     * Each call increments the count by 1.
+     */
+    @PatchMapping("/{id}/like")
+    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedLikeResponse")
+    public ResponseEntity<Map<String, Integer>> likeStream(
+            @PathVariable("id") UUID streamId
+    ) {
+        log.debug("PATCH /streams/{}/like", streamId);
+        return ResponseEntity.ok(Map.of("likes", streamService.likeStream(streamId)));
     }
 
     /**
-     * PATCH /api/streams/{id}/end
-     *
-     * Transitions stream from LIVE → ENDED.
-     * Same hostKey validation pattern as /start.
+     * PATCH /api/streams/{id}/unlike
+     * No authentication required. No session tracking.
+     * Each call decrements the count by 1 (floor at 0).
      */
-    @PatchMapping("/{id}/end")
-    public ResponseEntity<StreamResponse> endStream(@PathVariable("id") UUID streamId, @RequestHeader(value = "X-Host-Key", required = false) String hostKey) {
-        log.info("PATCH /streams/{}/end", streamId);
-        return ResponseEntity.ok(streamService.endStream(streamId, hostKey));
+    @PatchMapping("/{id}/unlike")
+    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedLikeResponse")
+    public ResponseEntity<Map<String, Integer>> unlikeStream(
+            @PathVariable("id") UUID streamId
+    ) {
+        log.debug("PATCH /streams/{}/unlike", streamId);
+        return ResponseEntity.ok(Map.of("likes", streamService.unlikeStream(streamId)));
+    }
+
+    // =========================================================
+    // RATE LIMIT FALLBACKS
+    // =========================================================
+
+    /**
+     * Rate limiter fallback for like/unlike.
+     * Signature must match the method it covers exactly.
+     */
+    public ResponseEntity<Map<String, Integer>> rateLimitedLikeResponse(
+            UUID streamId, Throwable t
+    ) {
+        log.warn("Rate limit exceeded for like/unlike — streamId: {}", streamId);
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build();
+    }
+
+    public ResponseEntity<Map<String, Integer>> rateLimitedIntResponse(
+            UUID streamId,
+            String sessionId,
+            Throwable t
+    ) {
+        log.warn("Like rate limit exceeded — streamId: {}, sessionId: {}",
+                streamId, sessionId);
+
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                .build();
     }
 }

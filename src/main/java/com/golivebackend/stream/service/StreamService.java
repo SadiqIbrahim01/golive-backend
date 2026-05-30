@@ -1,72 +1,42 @@
 package com.golivebackend.stream.service;
 
+import com.golivebackend.common.exception.StreamNotFoundException;
 import com.golivebackend.livekit.service.UnauthorisedHostException;
 import com.golivebackend.stream.dto.StreamRequest;
 import com.golivebackend.stream.dto.StreamResponse;
 import com.golivebackend.stream.model.Stream;
+import com.golivebackend.stream.model.StreamLike;
 import com.golivebackend.stream.model.StreamStatus;
+import com.golivebackend.stream.model.StreamType;
+import com.golivebackend.stream.repository.StreamLikeRepository;
 import com.golivebackend.stream.repository.StreamRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import com.golivebackend.common.exception.StreamNotFoundException;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * Business logic for stream management.
- *
- * LAYERS THIS CLASS SITS BETWEEN:
- *   StreamController (HTTP layer)  →  StreamService  →  StreamRepository (DB)
- *
- * RULES FOR THIS CLASS:
- *   ✅ All business logic lives here
- *   ✅ Returns DTOs to the controller — never entities
- *   ✅ Accepts DTOs from the controller — never raw HTTP params
- *   ❌ Never handles HTTP concerns (status codes, headers)
- *   ❌ Never writes SQL or calls JPA directly (that's the repository)
- *
- * @Service marks this as a Spring-managed bean and signals intent.
- *
- * @RequiredArgsConstructor (Lombok): generates a constructor for all
- * 'final' fields. Spring sees one constructor → uses it for injection.
- * This is constructor injection — the correct approach because:
- *   - Dependencies are explicit and required at construction time
- *   - The object is fully initialised or not at all
- *   - Easy to test — just pass a mock to the constructor
- *
- * @Slf4j (Lombok): injects a Logger named 'log'.
- * Equivalent to: private static final Logger log =
- *                    LoggerFactory.getLogger(StreamService.class);
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class StreamService {
 
     private final StreamRepository streamRepository;
+    private final StreamLikeRepository streamLikeRepository;
+    private final SimpMessagingTemplate messagingTemplate;
+
+    // =========================================================
+    // STREAM CRUD
+    // =========================================================
 
     /**
      * Creates a new stream session.
-     *
-     * WHAT HAPPENS HERE:
-     *   1. Generate a unique roomName for LiveKit
-     *   2. Generate a secret hostKey
-     *   3. Build the Stream entity via its factory method
-     *   4. Persist to PostgreSQL
-     *   5. Return a host response (includes hostKey — returned once only)
-     *
-     * @Transactional: wraps this method in a DB transaction.
-     * If anything throws an exception, the transaction rolls back.
-     * The stream is either fully created or not at all.
-     *
-     * WHY NOT @Transactional ON THE CLASS?
-     * Annotating the class makes every method transactional by default.
-     * Explicit annotation per method is more intentional — readOnly
-     * queries use @Transactional(readOnly = true) which is a meaningful
-     * DB-level optimisation (no flush, no dirty checking).
+     * Returns a host response — includes hostKey and hostUrl.
+     * This is the ONLY time hostKey is ever returned.
      */
     @Transactional
     public StreamResponse createStream(StreamRequest request) {
@@ -75,38 +45,40 @@ public class StreamService {
         String roomName = generateRoomName();
         String hostKey  = generateHostKey();
 
+        /*
+         * Default streamType to SCREEN_SHARE if not provided.
+         * Keeps the API backwards compatible with frontends
+         * that don't yet send this field.
+         */
+        StreamType streamType = request.streamType() != null
+                ? request.streamType()
+                : StreamType.SCREEN_SHARE;
+
+        String normalisedCategory = request.category() != null
+                ? request.category().trim().toLowerCase()
+                : null;
+
         Stream stream = Stream.create(
                 roomName,
                 hostKey,
-                request.title()
+                request.title(),
+                request.category(),
+                streamType
         );
 
         Stream saved = streamRepository.save(stream);
 
-        log.info("Stream created successfully. streamId={}, roomName={}",
-                saved.getStreamId(), saved.getRoomName());
+        log.info("Stream created — streamId: {}, type: {}, category: {}",
+                saved.getStreamId(), saved.getStreamType(), saved.getCategory());
 
-        /*
-         * toHostResponse: includes hostKey and hostUrl.
-         * This is the ONLY place we call toHostResponse.
-         * Every other method in this service uses toPublicResponse.
-         */
         return StreamResponse.toHostResponse(saved);
     }
 
     /**
-     * Retrieves a stream by its public ID.
+     * Retrieves a single stream by its public ID.
+     * Returns a public response — hostKey never included.
      *
-     * @Transactional(readOnly = true):
-     * Tells Hibernate this transaction will not modify data.
-     * Hibernate skips dirty checking (comparing current vs original state)
-     * on every entity in the session — meaningful performance gain
-     * when reading large result sets.
-     * At the DB level, some databases can route readOnly transactions
-     * to read replicas automatically.
-     *
-     * @throws StreamNotFoundException if no stream with this ID exists.
-     * The exception handler (Step 2.4) maps this to HTTP 404.
+     * @throws StreamNotFoundException if no stream exists with this ID
      */
     @Transactional(readOnly = true)
     public StreamResponse findById(UUID streamId) {
@@ -121,10 +93,8 @@ public class StreamService {
     }
 
     /**
-     * Returns all currently live streams.
-     *
-     * Returns a List<StreamResponse> — never a List<Stream>.
-     * The controller never touches an entity. Ever.
+     * Returns all currently LIVE streams ordered by start time descending.
+     * Used by GET /api/streams when no search query is provided.
      */
     @Transactional(readOnly = true)
     public List<StreamResponse> findLiveStreams() {
@@ -135,43 +105,50 @@ public class StreamService {
                 .stream()
                 .map(StreamResponse::toPublicResponse)
                 .toList();
-        /*
-         * .toList() returns an unmodifiable List (Java 16+).
-         * Callers receive a snapshot — they can't add/remove from it.
-         * Matches our intent: this is a read-only query result.
-         */
     }
 
     /**
-     * Transitions a stream from CREATED → LIVE.
+     * Searches LIVE streams by title or category.
+     * Case-insensitive. Returns only LIVE streams.
+     * Used by GET /api/streams?query={value}
      *
-     * Called when the host opens their host URL and clicks Go Live.
-     * After this call, the stream appears in GET /api/streams?status=LIVE.
+     * @param query the search term — wrapped in % wildcards here
+     */
+    @Transactional(readOnly = true)
+    public List<StreamResponse> searchStreams(String query) {
+        log.debug("Searching LIVE streams with query: {}", query);
+
+        /*
+         * % wildcards applied here in the service — not in the repository.
+         * The repository stays clean (just a query, no string manipulation).
+         * The service owns the "how we search" decision.
+         */
+        String likePattern = "%" + query.trim() + "%";
+
+        return streamRepository
+                .searchLiveStreams(likePattern)
+                .stream()
+                .map(StreamResponse::toPublicResponse)
+                .toList();
+    }
+
+    // =========================================================
+    // STREAM LIFECYCLE
+    // =========================================================
+
+    /**
+     * Transitions stream from CREATED → LIVE.
+     * Requires a valid hostKey in the X-Host-Key header.
      *
-     * VALIDATION ORDER (matters — we fail fast on cheapest checks first):
-     *   1. Does the stream exist?        → DB lookup   (404 if not)
-     *   2. Is the hostKey correct?       → String compare (403 if not)
-     *   3. Is the transition valid?      → domain method  (409 if not)
-     *
-     * @param streamId  the public stream identifier from the URL path
-     * @param hostKey   from the X-Host-Key request header
-     * @return public stream response (no hostKey in response)
+     * @throws StreamNotFoundException   if stream not found  (→ 404)
+     * @throws UnauthorisedHostException if hostKey is wrong  (→ 403)
+     * @throws IllegalStateException     if not in CREATED state (→ 409)
      */
     @Transactional
     public StreamResponse startStream(UUID streamId, String hostKey) {
         log.info("Start request — streamId: {}", streamId);
 
         Stream stream = loadAndAuthoriseStream(streamId, hostKey);
-
-        /*
-         * stream.start() enforces the CREATED → LIVE transition.
-         * Throws IllegalStateException if status is not CREATED.
-         * GlobalExceptionHandler maps this to 409 Conflict.
-         *
-         * We don't check status here — that's the domain's job.
-         * The service trusts the entity to enforce its own rules.
-         * This is the Rich Domain Model pattern paying off.
-         */
         stream.start();
 
         Stream saved = streamRepository.save(stream);
@@ -183,64 +160,136 @@ public class StreamService {
     }
 
     /**
-     * Transitions a stream from LIVE → ENDED.
+     * Transitions stream from LIVE → ENDED.
+     * Requires a valid hostKey in the X-Host-Key header.
      *
-     * Called when the host clicks End Stream.
-     * After this call, the stream disappears from the live listing
-     * and no new tokens can be issued for it.
-     *
-     * @param streamId  the public stream identifier from the URL path
-     * @param hostKey   from the X-Host-Key request header
-     * @return public stream response reflecting ENDED status
+     * @throws StreamNotFoundException   if stream not found (→ 404)
+     * @throws UnauthorisedHostException if hostKey is wrong (→ 403)
+     * @throws IllegalStateException     if not in LIVE state (→ 409)
      */
     @Transactional
     public StreamResponse endStream(UUID streamId, String hostKey) {
         log.info("End request — streamId: {}", streamId);
 
         Stream stream = loadAndAuthoriseStream(streamId, hostKey);
-
         stream.end();
 
         Stream saved = streamRepository.save(stream);
 
-        log.info("Stream ended — streamId: {}, status: {}",
-                saved.getStreamId(), saved.getStatus());
+        /*
+         * Notify all connected viewers that the stream has ended.
+         * The frontend should listen for messages of type STREAM_ENDED
+         * on the chat topic and redirect the viewer appropriately.
+         *
+         * We broadcast to the same topic viewers are already subscribed to
+         * — no new subscription required on the frontend.
+         *
+         * WHY AFTER save() AND NOT BEFORE?
+         * The DB must reflect ENDED status before we tell clients.
+         * If we broadcast first and the save fails, clients think the
+         * stream ended but our DB still shows LIVE — inconsistent state.
+         */
+        messagingTemplate.convertAndSend(
+                "/topic/streams/" + streamId + "/chat",
+                java.util.Map.of(
+                        "type", "STREAM_ENDED",
+                        "stream_id", streamId.toString(),
+                        "timestamp", java.time.Instant.now().toString()
+                )
+        );
+
+        log.info("Stream ended — streamId: {}, broadcast sent to subscribers",
+                saved.getStreamId());
 
         return StreamResponse.toPublicResponse(saved);
     }
 
-// =========================================================
-// PRIVATE — Shared authorisation logic
-// =========================================================
+    // =========================================================
+    // LIKES
+    // =========================================================
 
     /**
-     * Loads a stream by ID and validates the hostKey in one step.
+     * Increments the like count for a stream.
+     * No deduplication — a viewer can like as many times as they choose.
+     * Single atomic DB operation. No race condition possible.
+     */
+    @Transactional
+    public int likeStream(UUID streamId) {
+        Stream stream = streamRepository.findByStreamId(streamId)
+                .orElseThrow(() -> new StreamNotFoundException(
+                        "Stream not found: " + streamId));
+
+        streamRepository.incrementLikes(streamId);
+
+        log.info("Stream {} liked — new count approx: {}",
+                streamId, stream.getLikesCount() + 1);
+
+        return stream.getLikesCount() + 1;
+    }
+
+    /**
+     * Decrements the like count for a stream.
+     * Floor at 0 enforced by GREATEST() in the native query.
+     * Idempotent only in the sense that it cannot go below zero.
+     */
+    @Transactional
+    public int unlikeStream(UUID streamId) {
+        Stream stream = streamRepository.findByStreamId(streamId)
+                .orElseThrow(() -> new StreamNotFoundException(
+                        "Stream not found: " + streamId));
+
+        streamRepository.decrementLikes(streamId);
+
+        log.info("Stream {} unliked — new count approx: {}",
+                streamId, Math.max(stream.getLikesCount() - 1, 0));
+
+        return Math.max(stream.getLikesCount() - 1, 0);
+    }
+
+    // =========================================================
+    // VIEWER COUNT
+    // =========================================================
+
+    /**
+     * Atomically increments the viewer count for a stream.
+     * Called by WebSocketEventListener when a session subscribes
+     * to a stream's chat topic.
+     */
+    @Transactional
+    public void incrementViewerCount(UUID streamId) {
+        log.debug("Incrementing viewer count for streamId: {}", streamId);
+        streamRepository.incrementViewerCount(streamId);
+    }
+
+    /**
+     * Atomically decrements the viewer count for a stream.
+     * Floor is 0 — enforced by GREATEST() in the repository query.
+     * Called by WebSocketEventListener when a session disconnects.
+     */
+    @Transactional
+    public void decrementViewerCount(UUID streamId) {
+        log.debug("Decrementing viewer count for streamId: {}", streamId);
+        streamRepository.decrementViewerCount(streamId);
+    }
+
+    // =========================================================
+    // PRIVATE HELPERS
+    // =========================================================
+
+    /**
+     * Loads a stream by ID and validates the hostKey.
+     * Shared by startStream() and endStream() to ensure
+     * auth logic never drifts between the two methods.
      *
-     * WHY A PRIVATE SHARED METHOD?
-     * Both startStream() and endStream() need the same two checks:
-     *   1. Stream exists
-     *   2. Caller is the legitimate host
-     *
-     * Extracting this prevents the checks from drifting out of sync
-     * if one method is updated without the other.
-     * DRY (Don't Repeat Yourself) applied correctly — not just
-     * avoiding code duplication, but ensuring the security check
-     * is never accidentally omitted on a lifecycle endpoint.
-     *
-     * @throws StreamNotFoundException    if stream doesn't exist (→ 404)
-     * @throws UnauthorisedHostException  if hostKey is wrong    (→ 403)
+     * @throws StreamNotFoundException   if stream not found
+     * @throws UnauthorisedHostException if hostKey is missing or wrong
      */
     private Stream loadAndAuthoriseStream(UUID streamId, String hostKey) {
-        Stream stream = streamRepository
-                .findByStreamId(streamId)
+        Stream stream = streamRepository.findByStreamId(streamId)
                 .orElseThrow(() -> new StreamNotFoundException(
                         "Stream not found with id: " + streamId
                 ));
 
-        /*
-         * Null/blank check first — prevents NullPointerException
-         * on the .equals() call and gives a clearer error message.
-         */
         if (hostKey == null || hostKey.isBlank()) {
             throw new UnauthorisedHostException(
                     "X-Host-Key header is required"
@@ -256,39 +305,10 @@ public class StreamService {
         return stream;
     }
 
-    // =========================================================
-    // PRIVATE HELPERS
-    // =========================================================
-
-    /**
-     * Generates a unique LiveKit room name.
-     *
-     * Format: "room-{UUID}"
-     * The "room-" prefix makes it obvious in LiveKit's dashboard
-     * that this identifier is a room (not a participant or token).
-     *
-     * UUID.randomUUID() is cryptographically random (SecureRandom).
-     * Collision probability is negligible at our scale.
-     *
-     * We strip hyphens because some LiveKit SDK versions handle
-     * hyphens inconsistently in room names.
-     */
     private String generateRoomName() {
         return "room-" + UUID.randomUUID().toString().replace("-", "");
     }
 
-    /**
-     * Generates a cryptographically secure host key.
-     *
-     * UUID v4 = 122 bits of randomness from SecureRandom.
-     * Sufficient entropy for a short-lived session secret.
-     *
-     * UPGRADE PATH:
-     * For production with persistent host accounts, replace this
-     * with a bcrypt-hashed token stored in the DB.
-     * The raw token is given to the host; the hash is stored.
-     * Verification: bcrypt.matches(incomingKey, storedHash).
-     */
     private String generateHostKey() {
         return UUID.randomUUID().toString();
     }
