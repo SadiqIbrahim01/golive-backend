@@ -102,7 +102,7 @@ public interface StreamRepository extends JpaRepository<Stream, UUID> {
     )
     void decrementViewerCount(@Param("id") UUID id);
 
-// ─── LIKES ────────────────────────────────────────────────────────────────
+    // ─── LIKES ────────────────────────────────────────────────────────────────
 
     @Modifying
     @Query("UPDATE Stream s SET s.likesCount = s.likesCount + 1 WHERE s.streamId = :id")
