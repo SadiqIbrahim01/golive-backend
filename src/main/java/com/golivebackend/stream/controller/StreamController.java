@@ -1,5 +1,7 @@
 package com.golivebackend.stream.controller;
 
+import io.github.resilience4j.ratelimiter.RequestNotPermitted;
+
 import com.golivebackend.stream.dto.StreamRequest;
 import com.golivebackend.stream.dto.StreamResponse;
 import com.golivebackend.stream.service.StreamService;
@@ -30,13 +32,8 @@ public class StreamController {
     // =========================================================
 
     @PostMapping
-    @RateLimiter(
-            name = "stream-creation",
-            fallbackMethod = "rateLimitedResponse"
-    )
-    public ResponseEntity<StreamResponse> createStream(
-            @Valid @RequestBody StreamRequest request
-    ) {
+    @RateLimiter(name = "stream-creation", fallbackMethod = "rateLimitedResponse")
+    public ResponseEntity<StreamResponse> createStream(@Valid @RequestBody StreamRequest request) {
         log.info("POST /streams — title: {}, category: {}, type: {}",
                 request.title(), request.category(), request.streamType());
 
@@ -60,14 +57,32 @@ public class StreamController {
                 .body(streamService.findById(streamId));
     }
 
+    @GetMapping("/trending")
+    public ResponseEntity<List<StreamResponse>> getTrendingStreams() {
+        log.debug("GET /streams/trending — listing trending LIVE streams");
+
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.maxAge(5, TimeUnit.SECONDS).cachePublic())
+                .body(streamService.findTrendingStreams());
+    }
+
     /**
      * GET /streams
      * Cached for 5 seconds (stream listing endpoint)
      */
     @GetMapping
     public ResponseEntity<List<StreamResponse>> getStreams(
-            @RequestParam(required = false) String query
+            @RequestParam(required = false) String query,
+            @RequestParam(required = false) String category
     ) {
+
+        if (category != null && !category.isBlank()) {
+            log.debug("GET /streams?category={}", category);
+
+            return ResponseEntity.ok()
+                    .cacheControl(CacheControl.maxAge(5, TimeUnit.SECONDS).cachePublic())
+                    .body(streamService.findLiveStreamsByCategory(category));
+        }
 
         if (query != null && !query.isBlank()) {
 
@@ -158,11 +173,11 @@ public class StreamController {
      * Rate limiter fallback for like/unlike.
      * Signature must match the method it covers exactly.
      */
-    public ResponseEntity<Map<String, Integer>> rateLimitedLikeResponse(
-            UUID streamId, Throwable t
-    ) {
+    public ResponseEntity<Map<String, Integer>> rateLimitedLikeResponse(UUID streamId, Throwable t) {
         log.warn("Rate limit exceeded for like/unlike — streamId: {}", streamId);
-        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build();
+        Map<String, Integer> errorBody = Map.of("errorCode", 429);
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(errorBody);
     }
 
     public ResponseEntity<Map<String, Integer>> rateLimitedIntResponse(
@@ -177,4 +192,25 @@ public class StreamController {
                 .status(HttpStatus.TOO_MANY_REQUESTS)
                 .build();
     }
+    public ResponseEntity<StreamResponse> rateLimitedResponse(StreamRequest request, RequestNotPermitted ex) {
+        log.warn("Rate limit exceeded for stream creation! Title: {}, Category: {}",
+                request.title(), request.category());
+
+        // Option A: Return 429 with an empty body (Requires StreamResponse to allow null or empty checks)
+//        return ResponseEntity
+//                .status(HttpStatus.TOO_MANY_REQUESTS)
+//                .build();
+
+
+    StreamResponse errorResponse = new StreamResponse(
+        null, // or custom error ID
+        "Rate limit exceeded. Please try again later.",
+    null,null,null,null,null,null,0,0,null,
+            null,null);
+    return ResponseEntity
+            .status(HttpStatus.TOO_MANY_REQUESTS)
+            .body(errorResponse);
+
+    }
+
 }

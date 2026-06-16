@@ -301,6 +301,7 @@ public class Stream {
         }
         this.status = StreamStatus.ENDED;
         this.endedAt = Instant.now();
+        this.viewerCount = 0;
     }
 
     /**

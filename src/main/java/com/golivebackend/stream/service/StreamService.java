@@ -5,10 +5,8 @@ import com.golivebackend.livekit.service.UnauthorisedHostException;
 import com.golivebackend.stream.dto.StreamRequest;
 import com.golivebackend.stream.dto.StreamResponse;
 import com.golivebackend.stream.model.Stream;
-import com.golivebackend.stream.model.StreamLike;
 import com.golivebackend.stream.model.StreamStatus;
 import com.golivebackend.stream.model.StreamType;
-import com.golivebackend.stream.repository.StreamLikeRepository;
 import com.golivebackend.stream.repository.StreamRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,7 +24,6 @@ import java.util.UUID;
 public class StreamService {
 
     private final StreamRepository streamRepository;
-    private final StreamLikeRepository streamLikeRepository;
     private final SimpMessagingTemplate messagingTemplate;
 
     // =========================================================
@@ -62,7 +59,7 @@ public class StreamService {
                 roomName,
                 hostKey,
                 request.title(),
-                request.category(),
+                normalisedCategory,
                 streamType
         );
 
@@ -127,6 +124,32 @@ public class StreamService {
 
         return streamRepository
                 .searchLiveStreams(likePattern)
+                .stream()
+                .map(StreamResponse::toPublicResponse)
+                .toList();
+    }
+
+    /**
+     * Finds LIVE streams matching a specific category.
+     */
+    @Transactional(readOnly = true)
+    public List<StreamResponse> findLiveStreamsByCategory(String category) {
+        log.debug("Fetching LIVE streams for category: {}", category);
+        return streamRepository
+                .findLiveStreamsByCategory(category.trim())
+                .stream()
+                .map(StreamResponse::toPublicResponse)
+                .toList();
+    }
+
+    /**
+     * Finds LIVE streams ordered by viewer count descending.
+     */
+    @Transactional(readOnly = true)
+    public List<StreamResponse> findTrendingStreams() {
+        log.debug("Fetching trending LIVE streams");
+        return streamRepository
+                .findTrendingStreams()
                 .stream()
                 .map(StreamResponse::toPublicResponse)
                 .toList();
@@ -259,6 +282,8 @@ public class StreamService {
     public void incrementViewerCount(UUID streamId) {
         log.debug("Incrementing viewer count for streamId: {}", streamId);
         streamRepository.incrementViewerCount(streamId);
+        int currentCount = streamRepository.getViewerCount(streamId);
+        broadcastViewerCount(streamId, currentCount);
     }
 
     /**
@@ -270,6 +295,20 @@ public class StreamService {
     public void decrementViewerCount(UUID streamId) {
         log.debug("Decrementing viewer count for streamId: {}", streamId);
         streamRepository.decrementViewerCount(streamId);
+        int currentCount = streamRepository.getViewerCount(streamId);
+        broadcastViewerCount(streamId, currentCount);
+    }
+
+    private void broadcastViewerCount(UUID streamId, int viewerCount) {
+        messagingTemplate.convertAndSend(
+                "/topic/streams/" + streamId + "/chat",
+                java.util.Map.of(
+                        "type", "VIEWER_COUNT",
+                        "stream_id", streamId.toString(),
+                        "viewer_count", viewerCount
+                )
+        );
+        log.info("Broadcasted viewer count update for stream {} to {}", streamId, viewerCount);
     }
 
     // =========================================================

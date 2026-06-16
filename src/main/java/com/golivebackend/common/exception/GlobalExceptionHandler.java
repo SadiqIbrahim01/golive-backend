@@ -33,9 +33,7 @@ public class GlobalExceptionHandler {
      * 403 — Invalid or missing host key.
      */
     @ExceptionHandler(UnauthorisedHostException.class)
-    public ResponseEntity<Map<String, Object>> handleUnauthorisedHost(
-            UnauthorisedHostException ex
-    ) {
+    public ResponseEntity<Map<String, Object>> handleUnauthorisedHost(UnauthorisedHostException ex) {
         log.warn("Unauthorised host attempt: {}", ex.getMessage());
         return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage());
     }
@@ -82,9 +80,7 @@ public class GlobalExceptionHandler {
      * Stack trace logged internally. Generic message to client.
      */
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<Map<String, Object>> handleUnexpected(
-            Exception ex
-    ) {
+    public ResponseEntity<Map<String, Object>> handleUnexpected(Exception ex) {
         log.error("Unexpected error", ex);
         return buildResponse(
                 HttpStatus.INTERNAL_SERVER_ERROR,

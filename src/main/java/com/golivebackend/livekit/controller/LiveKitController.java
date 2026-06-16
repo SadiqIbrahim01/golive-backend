@@ -80,9 +80,7 @@ public class LiveKitController {
     /**
      * Invoked when token-generation limit is exceeded.
      */
-    public ResponseEntity<TokenResponse> rateLimitedResponse(
-            TokenRequest request,
-            Throwable t
+    public ResponseEntity<TokenResponse> rateLimitedResponse(TokenRequest request, Throwable t
     ) {
 
         log.warn(
