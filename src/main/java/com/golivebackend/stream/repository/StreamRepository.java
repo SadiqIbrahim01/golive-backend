@@ -84,9 +84,30 @@ public interface StreamRepository extends JpaRepository<Stream, UUID> {
             """)
     List<Stream> searchLiveStreams(@Param("query") String query);
 
+    @Query("""
+            SELECT s FROM Stream s
+            WHERE s.status = 'LIVE'
+            AND (
+                LOWER(s.category) = LOWER(:category)
+                OR LOWER(s.category) LIKE LOWER(CONCAT('%', :category, '%'))
+            )
+            ORDER BY s.startedAt DESC
+            """)
+    List<Stream> findLiveStreamsByCategory(@Param("category") String category);
+
+    @Query("""
+            SELECT s FROM Stream s
+            WHERE s.status = 'LIVE'
+            ORDER BY s.viewerCount DESC, s.startedAt DESC
+            """)
+    List<Stream> findTrendingStreams();
+
     // ─── VIEWER COUNT ─────────────────────────────────────────────────────────
 
-    @Modifying
+    @Query("SELECT s.viewerCount FROM Stream s WHERE s.streamId = :id")
+    int getViewerCount(@Param("id") UUID id);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE Stream s SET s.viewerCount = s.viewerCount + 1 WHERE s.streamId = :id")
     void incrementViewerCount(@Param("id") UUID id);
 
@@ -95,7 +116,7 @@ public interface StreamRepository extends JpaRepository<Stream, UUID> {
      * nativeQuery = true sends raw SQL directly to PostgreSQL.
      * GREATEST(viewer_count - 1, 0) ensures the count never goes below zero.
      */
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(
             value = "UPDATE streams SET viewer_count = GREATEST(viewer_count - 1, 0) WHERE stream_id = :id",
             nativeQuery = true
