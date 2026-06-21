@@ -3,7 +3,7 @@ package com.golivebackend.chat.websocket;
 import com.golivebackend.chat.dto.ChatMessage;
 import com.golivebackend.common.exception.StreamNotFoundException;
 import com.golivebackend.stream.model.StreamStatus;
-import com.golivebackend.stream.repository.StreamRepository;
+import com.golivebackend.stream.service.StreamCacheService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.handler.annotation.MessageMapping;
@@ -47,7 +47,7 @@ public class ChatWebSocketController {
      * is present — we just inject it.
      */
     private final SimpMessagingTemplate messagingTemplate;
-    private final StreamRepository streamRepository;
+    private final StreamCacheService streamCacheService;
 
     /**
      * Handles incoming chat messages from any participant.
@@ -80,7 +80,7 @@ public class ChatWebSocketController {
          * Reject messages for non-existent streams immediately.
          * Without this, anyone could spam topics for fake stream IDs.
          */
-        var stream = streamRepository
+        var stream = streamCacheService
                 .findByStreamId(incomingMessage.streamId())
                 .orElseThrow(() -> new StreamNotFoundException(
                         "Stream not found: " + incomingMessage.streamId()

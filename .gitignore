@@ -64,5 +64,6 @@ logs/
 
 docker-compose.yml
 backend.zip
-
+mvnw.cmd
+mvnw
 docs/
