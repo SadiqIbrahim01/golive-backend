@@ -6,7 +6,7 @@ import com.golivebackend.livekit.dto.TokenResponse;
 import com.golivebackend.livekit.model.ParticipantRole;
 import com.golivebackend.stream.model.Stream;
 import com.golivebackend.stream.model.StreamStatus;
-import com.golivebackend.stream.repository.StreamRepository;
+import com.golivebackend.stream.service.StreamCacheService;
 import io.livekit.server.AccessToken;
 import io.livekit.server.CanPublish;
 import io.livekit.server.CanSubscribe;
@@ -25,7 +25,7 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class LiveKitTokenService {
 
-    private final StreamRepository streamRepository;
+    private final StreamCacheService streamCacheService;
     private final LiveKitProperties liveKitProperties;
 
     @Transactional(readOnly = true)
@@ -33,7 +33,7 @@ public class LiveKitTokenService {
         log.info("Token request — streamId: {}, role: {}",
                 request.streamId(), request.role());
 
-        Stream stream = streamRepository
+        Stream stream = streamCacheService
                 .findByStreamId(request.streamId())
                 .orElseThrow(() -> new StreamNotFoundException(
                         "Stream not found with id: " + request.streamId()

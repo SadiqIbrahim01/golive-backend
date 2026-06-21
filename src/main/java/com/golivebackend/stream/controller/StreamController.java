@@ -134,7 +134,7 @@ public class StreamController {
     }
 
     // =========================================================
-    // LIKES (UNCHANGED)
+    // LIKES
     // =========================================================
 
     /**
@@ -151,30 +151,15 @@ public class StreamController {
         return ResponseEntity.ok(Map.of("likes", streamService.likeStream(streamId)));
     }
 
-    /**
-     * PATCH /api/streams/{id}/unlike
-     * No authentication required. No session tracking.
-     * Each call decrements the count by 1 (floor at 0).
-     */
-    @PatchMapping("/{id}/unlike")
-    @RateLimiter(name = "stream-likes", fallbackMethod = "rateLimitedLikeResponse")
-    public ResponseEntity<Map<String, Integer>> unlikeStream(
-            @PathVariable("id") UUID streamId
-    ) {
-        log.debug("PATCH /streams/{}/unlike", streamId);
-        return ResponseEntity.ok(Map.of("likes", streamService.unlikeStream(streamId)));
-    }
-
     // =========================================================
     // RATE LIMIT FALLBACKS
     // =========================================================
 
     /**
-     * Rate limiter fallback for like/unlike.
-     * Signature must match the method it covers exactly.
+     * Rate limiter fallback for like.
      */
     public ResponseEntity<Map<String, Integer>> rateLimitedLikeResponse(UUID streamId, Throwable t) {
-        log.warn("Rate limit exceeded for like/unlike — streamId: {}", streamId);
+        log.warn("Rate limit exceeded for like — streamId: {}", streamId);
         Map<String, Integer> errorBody = Map.of("errorCode", 429);
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .body(errorBody);

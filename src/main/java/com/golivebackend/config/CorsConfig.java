@@ -79,11 +79,9 @@ public class CorsConfig implements WebMvcConfigurer {
                  * allowedHeaders("*") is acceptable here since we control
                  * what headers our frontend sends.
                  */
-                .allowedHeaders(
-                        "Content-Type",
-                        "Authorization",
-                        "X-Host-Key"
-                )
+                .allowedHeaders("*")
+                .allowCredentials(true)
+
 
                 /*
                  * Which response headers the frontend JavaScript can read.
@@ -100,5 +98,6 @@ public class CorsConfig implements WebMvcConfigurer {
                  * Reduces preflight round-trips in production.
                  */
                 .maxAge(3600);
+
     }
 }

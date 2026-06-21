@@ -37,7 +37,9 @@ import java.util.UUID;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class Stream {
+public class Stream implements java.io.Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     /**
      * PRIMARY KEY
@@ -324,6 +326,20 @@ public class Stream {
             );
         }
         this.title = newTitle;
+    }
+
+    /**
+     * Increments the likes count in-memory.
+     */
+    public void incrementLikesCount() {
+        this.likesCount++;
+    }
+
+    /**
+     * Decrements the likes count in-memory. Enforces floor of 0.
+     */
+    public void decrementLikesCount() {
+        this.likesCount = Math.max(this.likesCount - 1, 0);
     }
 
     /**

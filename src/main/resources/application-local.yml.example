@@ -5,27 +5,74 @@
 # ============================================================
 
 spring:
+  application:
+    name: golive-backend
+
+  profiles:
+    active: local
+
   datasource:
-    url: jdbc:postgresql://localhost:5432/golive_dev
-    username: YOUR_POSTGRES_USERNAME
-    password: YOUR_POSTGRES_PASSWORD
-    hikari:
-      maximum-pool-size: 5
-      connection-timeout: 20000
-      idle-timeout: 300000
-      pool-name: GoLiveHikariPool
+    url: jdbc:postgresql://localhost:5432/golive_db
+    username: golive_user
+    password: golive_password
+    driver-class-name: org.postgresql.Driver
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
   jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
     hibernate:
-      ddl-auto: create-drop
+      ddl-auto: update
     show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        default_batch_fetch_size: 20
+
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: false
+
+server:
+  address: 0.0.0.0
+  port: 8080
+  servlet:
+    context-path: /api
+
+cors:
+  allowed-origin: "http://192.168.100.11:5173,http://localhost:5173"
 
 livekit:
-  url: wss://your-project.livekit.cloud
-  api-key: YOUR_LIVEKIT_API_KEY
-  api-secret: YOUR_LIVEKIT_API_SECRET
+  url: ${LIVEKIT_URL:ws://192.168.100.11:7880}
+  api-key: ${LIVEKIT_API_KEY:devkey}
+  api-secret: ${LIVEKIT_API_SECRET:secret}
 
 logging:
   level:
+    root: INFO
+    com.golive: DEBUG
     org.hibernate.SQL: DEBUG
-    org.hibernate.orm.jdbc.bind: TRACE
+
+# Admin credentials — override in production via environment variables.
+# ADMIN_USERNAME and ADMIN_PASSWORD must be set in prod.
+admin:
+  username: ${ADMIN_USERNAME:admin}
+  password: ${ADMIN_PASSWORD:changeme}
+
+# JWT configuration — use a strong random secret in production (≥32 bytes base64).
+jwt:
+  secret: ${JWT_SECRET:my-very-long-256-bit-secret-key-here-replace-in-prod}
+  expiration-ms: 86400000  # 24 hours
+
+resilience4j:
+  ratelimiter:
+    instances:
+      backendApiLimiter:
+        limitForPeriod: 5          # Number of allowed requests
+        limitRefreshPeriod: 10s    # Reset interval window
+        timeoutDuration: 0s        # Block immediately instead of waiting for a token

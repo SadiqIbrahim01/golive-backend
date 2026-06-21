@@ -21,7 +21,9 @@ public record StreamResponse(
         Instant createdAt,
         Instant startedAt,
         Instant endedAt
-) {
+) implements java.io.Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     public static StreamResponse toPublicResponse(Stream stream) {
         return new StreamResponse(
@@ -34,6 +36,24 @@ public record StreamResponse(
                 null,
                 null,
                 stream.getViewerCount(),
+                stream.getLikesCount(),
+                stream.getCreatedAt(),
+                stream.getStartedAt(),
+                stream.getEndedAt()
+        );
+    }
+
+    public static StreamResponse toPublicResponseWithViewerCount(Stream stream, int viewerCount) {
+        return new StreamResponse(
+                stream.getStreamId(),
+                stream.getTitle(),
+                stream.getCategory(),
+                stream.getStreamType(),
+                stream.getStatus(),
+                buildWatchUrl(stream.getStreamId()),
+                null,
+                null,
+                viewerCount,
                 stream.getLikesCount(),
                 stream.getCreatedAt(),
                 stream.getStartedAt(),

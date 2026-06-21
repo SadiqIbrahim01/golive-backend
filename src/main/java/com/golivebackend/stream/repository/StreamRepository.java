@@ -108,6 +108,10 @@ public interface StreamRepository extends JpaRepository<Stream, UUID> {
     int getViewerCount(@Param("id") UUID id);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Stream s SET s.viewerCount = :viewerCount WHERE s.streamId = :id")
+    void updateViewerCount(@Param("id") UUID id, @Param("viewerCount") int viewerCount);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE Stream s SET s.viewerCount = s.viewerCount + 1 WHERE s.streamId = :id")
     void incrementViewerCount(@Param("id") UUID id);
 

@@ -25,6 +25,8 @@ public class StreamService {
 
     private final StreamRepository streamRepository;
     private final SimpMessagingTemplate messagingTemplate;
+    private final ViewerCountCacheService viewerCountCacheService;
+    private final StreamCacheService streamCacheService;
 
     // =========================================================
     // STREAM CRUD
@@ -64,6 +66,8 @@ public class StreamService {
         );
 
         Stream saved = streamRepository.save(stream);
+        streamCacheService.cacheStream(saved);
+        streamCacheService.evictAllLists();
 
         log.info("Stream created — streamId: {}, type: {}, category: {}",
                 saved.getStreamId(), saved.getStreamType(), saved.getCategory());
@@ -81,12 +85,13 @@ public class StreamService {
     public StreamResponse findById(UUID streamId) {
         log.debug("Fetching stream by id: {}", streamId);
 
-        Stream stream = streamRepository.findByStreamId(streamId)
+        Stream stream = streamCacheService.findByStreamId(streamId)
                 .orElseThrow(() -> new StreamNotFoundException(
                         "Stream not found with id: " + streamId
                 ));
 
-        return StreamResponse.toPublicResponse(stream);
+        int realTimeViewerCount = viewerCountCacheService.getViewerCount(streamId);
+        return StreamResponse.toPublicResponseWithViewerCount(stream, realTimeViewerCount);
     }
 
     /**
@@ -96,12 +101,20 @@ public class StreamService {
     @Transactional(readOnly = true)
     public List<StreamResponse> findLiveStreams() {
         log.debug("Fetching all LIVE streams");
-
-        return streamRepository
-                .findLiveStreamsOrderedByStartTime(StreamStatus.LIVE)
-                .stream()
-                .map(StreamResponse::toPublicResponse)
-                .toList();
+        String cacheKey = "stream:list:live";
+        List<StreamResponse> list = streamCacheService.getCachedList(cacheKey);
+        if (list == null) {
+            log.debug("List cache miss for: {}", cacheKey);
+            list = streamRepository
+                    .findLiveStreamsOrderedByStartTime(StreamStatus.LIVE)
+                    .stream()
+                    .map(StreamResponse::toPublicResponse)
+                    .toList();
+            streamCacheService.cacheList(cacheKey, list);
+        } else {
+            log.debug("List cache hit for: {}", cacheKey);
+        }
+        return mergeRealTimeViewerCounts(list);
     }
 
     /**
@@ -115,18 +128,14 @@ public class StreamService {
     public List<StreamResponse> searchStreams(String query) {
         log.debug("Searching LIVE streams with query: {}", query);
 
-        /*
-         * % wildcards applied here in the service — not in the repository.
-         * The repository stays clean (just a query, no string manipulation).
-         * The service owns the "how we search" decision.
-         */
         String likePattern = "%" + query.trim() + "%";
 
-        return streamRepository
+        List<StreamResponse> list = streamRepository
                 .searchLiveStreams(likePattern)
                 .stream()
                 .map(StreamResponse::toPublicResponse)
                 .toList();
+        return mergeRealTimeViewerCounts(list);
     }
 
     /**
@@ -135,11 +144,21 @@ public class StreamService {
     @Transactional(readOnly = true)
     public List<StreamResponse> findLiveStreamsByCategory(String category) {
         log.debug("Fetching LIVE streams for category: {}", category);
-        return streamRepository
-                .findLiveStreamsByCategory(category.trim())
-                .stream()
-                .map(StreamResponse::toPublicResponse)
-                .toList();
+        String cleanedCategory = category.trim().toLowerCase();
+        String cacheKey = "stream:list:category:" + cleanedCategory;
+        List<StreamResponse> list = streamCacheService.getCachedList(cacheKey);
+        if (list == null) {
+            log.debug("List cache miss for: {}", cacheKey);
+            list = streamRepository
+                    .findLiveStreamsByCategory(cleanedCategory)
+                    .stream()
+                    .map(StreamResponse::toPublicResponse)
+                    .toList();
+            streamCacheService.cacheList(cacheKey, list);
+        } else {
+            log.debug("List cache hit for: {}", cacheKey);
+        }
+        return mergeRealTimeViewerCounts(list);
     }
 
     /**
@@ -148,11 +167,20 @@ public class StreamService {
     @Transactional(readOnly = true)
     public List<StreamResponse> findTrendingStreams() {
         log.debug("Fetching trending LIVE streams");
-        return streamRepository
-                .findTrendingStreams()
-                .stream()
-                .map(StreamResponse::toPublicResponse)
-                .toList();
+        String cacheKey = "stream:list:trending";
+        List<StreamResponse> list = streamCacheService.getCachedList(cacheKey);
+        if (list == null) {
+            log.debug("List cache miss for: {}", cacheKey);
+            list = streamRepository
+                    .findTrendingStreams()
+                    .stream()
+                    .map(StreamResponse::toPublicResponse)
+                    .toList();
+            streamCacheService.cacheList(cacheKey, list);
+        } else {
+            log.debug("List cache hit for: {}", cacheKey);
+        }
+        return mergeRealTimeViewerCounts(list);
     }
 
     // =========================================================
@@ -175,6 +203,8 @@ public class StreamService {
         stream.start();
 
         Stream saved = streamRepository.save(stream);
+        streamCacheService.cacheStream(saved);
+        streamCacheService.evictAllLists();
 
         log.info("Stream started — streamId: {}, status: {}",
                 saved.getStreamId(), saved.getStatus());
@@ -197,7 +227,13 @@ public class StreamService {
         Stream stream = loadAndAuthoriseStream(streamId, hostKey);
         stream.end();
 
+        // Sync final count from Redis cache to DB and clear Redis key
+        viewerCountCacheService.syncViewerCountToDatabase(streamId);
+        viewerCountCacheService.clearViewerCount(streamId);
+
         Stream saved = streamRepository.save(stream);
+        streamCacheService.cacheStream(saved);
+        streamCacheService.evictAllLists();
 
         /*
          * Notify all connected viewers that the stream has ended.
@@ -238,35 +274,30 @@ public class StreamService {
      */
     @Transactional
     public int likeStream(UUID streamId) {
-        Stream stream = streamRepository.findByStreamId(streamId)
+        Stream stream = streamCacheService.findByStreamId(streamId)
                 .orElseThrow(() -> new StreamNotFoundException(
                         "Stream not found: " + streamId));
 
         streamRepository.incrementLikes(streamId);
 
-        log.info("Stream {} liked — new count approx: {}",
-                streamId, stream.getLikesCount() + 1);
+        // Update in-memory likesCount and write back to cache to avoid DB lookup
+        stream.incrementLikesCount();
+        streamCacheService.cacheStream(stream);
+        streamCacheService.evictAllLists();
 
-        return stream.getLikesCount() + 1;
-    }
+        int newCount = stream.getLikesCount();
+        log.info("Stream {} liked — new count: {}", streamId, newCount);
 
-    /**
-     * Decrements the like count for a stream.
-     * Floor at 0 enforced by GREATEST() in the native query.
-     * Idempotent only in the sense that it cannot go below zero.
-     */
-    @Transactional
-    public int unlikeStream(UUID streamId) {
-        Stream stream = streamRepository.findByStreamId(streamId)
-                .orElseThrow(() -> new StreamNotFoundException(
-                        "Stream not found: " + streamId));
+        // Broadcast real-time likes update to all viewers on this stream
+        messagingTemplate.convertAndSend(
+                "/topic/streams/" + streamId + "/chat",
+                java.util.Map.of(
+                        "type", "LIKES_UPDATE",
+                        "likes_count", newCount
+                )
+        );
 
-        streamRepository.decrementLikes(streamId);
-
-        log.info("Stream {} unliked — new count approx: {}",
-                streamId, Math.max(stream.getLikesCount() - 1, 0));
-
-        return Math.max(stream.getLikesCount() - 1, 0);
+        return newCount;
     }
 
     // =========================================================
@@ -281,8 +312,7 @@ public class StreamService {
     @Transactional
     public void incrementViewerCount(UUID streamId) {
         log.debug("Incrementing viewer count for streamId: {}", streamId);
-        streamRepository.incrementViewerCount(streamId);
-        int currentCount = streamRepository.getViewerCount(streamId);
+        int currentCount = viewerCountCacheService.incrementViewerCount(streamId);
         broadcastViewerCount(streamId, currentCount);
     }
 
@@ -294,8 +324,7 @@ public class StreamService {
     @Transactional
     public void decrementViewerCount(UUID streamId) {
         log.debug("Decrementing viewer count for streamId: {}", streamId);
-        streamRepository.decrementViewerCount(streamId);
-        int currentCount = streamRepository.getViewerCount(streamId);
+        int currentCount = viewerCountCacheService.decrementViewerCount(streamId);
         broadcastViewerCount(streamId, currentCount);
     }
 
@@ -324,7 +353,7 @@ public class StreamService {
      * @throws UnauthorisedHostException if hostKey is missing or wrong
      */
     private Stream loadAndAuthoriseStream(UUID streamId, String hostKey) {
-        Stream stream = streamRepository.findByStreamId(streamId)
+        Stream stream = streamCacheService.findByStreamId(streamId)
                 .orElseThrow(() -> new StreamNotFoundException(
                         "Stream not found with id: " + streamId
                 ));
@@ -350,5 +379,26 @@ public class StreamService {
 
     private String generateHostKey() {
         return UUID.randomUUID().toString();
+    }
+
+    private List<StreamResponse> mergeRealTimeViewerCounts(List<StreamResponse> list) {
+        if (list == null || list.isEmpty()) return list;
+        return list.stream()
+                .map(resp -> new StreamResponse(
+                        resp.streamId(),
+                        resp.title(),
+                        resp.category(),
+                        resp.streamType(),
+                        resp.status(),
+                        resp.watchUrl(),
+                        resp.hostUrl(),
+                        resp.hostKey(),
+                        viewerCountCacheService.getViewerCount(resp.streamId()),
+                        resp.likesCount(),
+                        resp.createdAt(),
+                        resp.startedAt(),
+                        resp.endedAt()
+                ))
+                .toList();
     }
 }
